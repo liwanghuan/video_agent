@@ -1,0 +1,13 @@
+{
+  "name": "framehouse-listing-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A listing video workspace with Qwen voiceover and Vertex AI Veo generation.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f5f2" />
+    <meta name="description" content="Create polished property and product reels from a listing, voiceover, and a few photos." />
+    <title>Framehouse — Listing video studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#" aria-label="Framehouse home">
+          <span class="brand-mark"><span></span><span></span><span></span></span>
+          <span>framehouse</span>
+        </a>
+
+        <button class="new-project"><span class="plus">+</span> New video <kbd>⌘ K</kbd></button>
+
+        <div class="nav-group">
+          <p class="nav-label">WORKSPACE</p>
+          <a class="nav-link active" href="#studio"><span class="nav-icon grid-icon">▦</span> Video studio</a>
+          <a class="nav-link" href="#projects"><span class="nav-icon">◷</span> My projects <span class="nav-count">4</span></a>
+          <a class="nav-link" href="#assets"><span class="nav-icon">▧</span> Media library</a>
+        </div>
+
+        <div class="sidebar-projects" id="projects">
+          <div class="project-heading"><span>RECENT PROJECTS</span><button aria-label="Add project">+</button></div>
+          <button class="recent-project selected"><span class="project-thumb thumb-sofa"></span><span class="recent-copy"><strong>East Coast living</strong><small>Edited just now</small></span><span class="project-dot"></span></button>
+          <button class="recent-project"><span class="project-thumb thumb-home"></span><span class="recent-copy"><strong>Quiet corner unit</strong><small>Yesterday</small></span></button>
+          <button class="recent-project"><span class="project-thumb thumb-room"></span><span class="recent-copy"><strong>Joo Chiat shophouse</strong><small>Oct 02</small></span></button>
+        </div>
+
+        <div class="sidebar-spacer"></div>
+        <div class="help-card"><div class="help-spark">✳</div><strong>Make your next listing move</strong><p>Turn a few good photos into a reel that feels like you.</p><button id="tipsButton">See studio tips <span>↗</span></button></div>
+        <button class="profile-button"><span class="avatar">JL</span><span class="profile-copy"><strong>Jasmine Lee</strong><small>Property agent</small></span><span class="profile-menu">···</span></button>
+      </aside>
+
+      <main class="main-area" id="studio">
+        <header class="topbar">
+          <div class="breadcrumbs"><span>My workspace</span><span class="crumb-slash">/</span><strong>East Coast living</strong><span class="demo-tag"><i></i> Demo project</span></div>
+          <div class="top-actions"><button class="icon-button" aria-label="Help" id="helpButton">?</button><button class="avatar small-avatar">JL</button></div>
+        </header>
+
+        <div class="workspace-content">
+          <div class="title-row">
+            <div><div class="page-kicker"><span class="kicker-line"></span> LISTING REEL <span class="kicker-muted">· DRAFT 04</span></div><h1>Make this place <span>move.</span></h1><p class="title-subtitle">A little story goes a long way. Build your next listing reel here.</p></div>
+            <button class="save-status" id="saveStatus"><span class="save-check">✓</span> <span id="saveLabel">All changes saved</span> <span class="chevron-down">⌄</span></button>
+          </div>
+
+          <nav class="stepper" aria-label="Video creation steps">
+            <button class="step active" data-step="audio"><span class="step-number">01</span><span class="step-name">Voiceover</span><span class="step-state">In progress</span></button>
+            <span class="step-connector done"></span>
+            <button class="step" data-step="motion"><span class="step-number">02</span><span class="step-name">Bring to life</span></button>
+            <span class="step-connector"></span>
+            <button class="step" data-step="finish"><span class="step-number">03</span><span class="step-name">Polish & export</span></button>
+          </nav>
+
+          <div class="studio-grid">
+            <section class="editor-column" aria-live="polite">
+              <div class="panel-heading"><div><span class="panel-index">01 / VOICEOVER</span><h2 id="panelTitle">Start with your words</h2></div><button class="text-button" id="scriptIdeas">Script ideas <span>↗</span></button></div>
+              <p class="panel-description" id="panelDescription">Write a natural introduction. We’ll shape it into a voiceover before the video.</p>
+
+              <div class="field-label-row"><label for="transcript">Your transcript</label><span class="language-pill"><span class="language-dot"></span> Mandarin · 简体</span></div>
+              <div class="transcript-wrap"><textarea id="transcript" maxlength="1200" spellcheck="false" aria-describedby="scriptHint">源头工厂直供，全流程一口价。在新加坡买中国家具，怕的不是买不到，怕的是后面没人管。你负责挑款式，我们就能把它装到位。</textarea><div class="textarea-footer"><span id="scriptHint">A good 10–20 second intro is easy to watch and easy to remember.</span><span id="charCount">0 / 1,200</span></div></div>
+
+              <div class="voice-label-row"><label>Choose a voice</label><button class="text-button voice-samples" id="voiceSamples">Listen to samples <span>↗</span></button></div>
+              <div class="voice-select-wrap"><span class="voice-avatar">晓</span><span class="voice-selected-copy"><strong>Xiaoyi</strong><small>Bright · Lively · Mandarin</small></span><span class="voice-selected-badge">SELECTED</span><button class="select-chevron" id="voiceDropdown" aria-label="Choose voice">⌄</button></div>
+              <div class="voice-menu" id="voiceMenu" hidden>
+                <button data-audio="01_xiaoyi_lively_sales.mp3" data-name="Xiaoyi" class="voice-option selected"><span class="voice-avatar">晓</span><span><strong>Xiaoyi</strong><small>Bright · Lively</small></span><span>✓</span></button>
+                <button data-audio="02_xiaoxiao_warm_confident.mp3" data-name="Xiaoxiao" class="voice-option"><span class="voice-avatar alt">笑</span><span><strong>Xiaoxiao</strong><small>Warm · Confident</small></span></button>
+                <button data-audio="03_xiaobei_humorous.mp3" data-name="Xiaobei" class="voice-option"><span class="voice-avatar alt2">贝</span><span><strong>Xiaobei</strong><small>Playful · Expressive</small></span></button>
+                <button data-audio="04_xiaoni_bright.mp3" data-name="Xiaoni" class="voice-option"><span class="voice-avatar alt3">妮</span><span><strong>Xiaoni</strong><small>Bright · Clear</small></span></button>
+              </div>
+
+              <div class="audio-preview" id="audioPreview">
+                <button class="play-audio" id="playAudio" aria-label="Play voice sample"><span class="play-triangle">▶</span></button>
+                <div class="audio-track"><div class="audio-track-top"><strong id="audioTrackTitle">Voice reference · Xiaoyi</strong><span id="audioDuration">0:12</span></div><div class="waveform" aria-hidden="true"></div><audio id="voiceAudio" preload="metadata" src="/edge_samples/01_xiaoyi_lively_sales.mp3"></audio></div>
+                <button class="audio-more" id="audioMore" aria-label="Audio options">···</button>
+              </div>
+              <p class="audio-note" id="audioNote"><span class="note-icon">i</span> Sample voice preview. Generate a new take to match your transcript.</p>
+
+              <div class="panel-divider"></div>
+              <div class="panel-bottom-row"><button class="secondary-button" id="saveDraft">Save draft</button><button class="primary-button" id="generateAudio"><span class="sparkle">✳</span> Generate voiceover <span class="button-arrow">→</span></button></div>
+              <div class="inline-feedback" id="audioFeedback" role="status" hidden></div>
+            </section>
+
+            <section class="preview-column">
+              <div class="preview-toolbar"><div class="preview-title"><span class="live-dot"></span><strong id="previewLabel">Supplied demo reel</strong><span class="preview-state" id="previewState">SAMPLE OUTPUT</span></div><button class="expand-button" id="expandPreview" aria-label="Expand preview">⛶</button></div>
+
+              <div class="preview-stage" id="previewStage">
+                <video id="previewVideo" src="/edge_samples/demo_listing_reel.mp4" playsinline preload="metadata" poster="/f30881536.jpg"></video>
+                <img id="frameOverlay" src="/f30881536.jpg" alt="Selected first frame" hidden />
+                <div class="preview-overlay" id="emptyOverlay"><span class="preview-play-icon">▶</span><strong>Ready for its close-up</strong><span>Your video preview will appear here</span></div>
+                <div class="video-badge top-left"><span class="badge-orbit">✳</span> AI MOTION</div>
+                <div class="video-badge top-right" id="aspectBadge">9:16</div>
+                <div class="safe-area"><span>SAFE AREA</span></div>
+                <div class="preview-caption" id="previewCaption">Your listing, in a new light.</div>
+                <div class="preview-scrim"></div>
+                <div class="stage-controls"><button class="stage-play" id="playVideo" aria-label="Play video">▶</button><span class="video-time" id="videoTime">0:00 <i>/</i> 0:12</span><div class="video-progress"><span id="videoProgress"></span></div><button class="volume-button" id="muteVideo" aria-label="Mute video">◖</button></div>
+              </div>
+
+              <div class="preview-meta"><div class="meta-item"><span class="meta-icon">◫</span><span><small>FORMAT</small><strong id="formatMeta">Vertical · 9:16</strong></span></div><div class="meta-item"><span class="meta-icon">◷</span><span><small>LENGTH</small><strong id="lengthMeta">12 sec · demo clip</strong></span></div><div class="meta-item"><span class="meta-icon">✳</span><span><small>MODEL</small><strong>Veo 3.1 Fast</strong></span></div></div>
+
+              <div class="destination-row"><div><span class="destination-icon">↗</span><span><strong>Made for the scroll</strong><small>Rednote · Instagram Reels · Facebook</small></span></div><button class="platform-button" id="platformButton">Rednote <span>⌄</span></button></div>
+
+              <div class="preview-actions"><button class="preview-edit-button" id="editVideo"><span>✳</span> Edit with Veo <span class="tiny-arrow">↗</span></button><button class="export-button" id="exportVideo"><span>↓</span> Export MP4</button></div>
+              <p class="preview-footnote" id="modelFootnote">Demo preview · Cloud models aren’t connected yet.</p>
+            </section>
+          </div>
+
+          <section class="assets-strip" id="assets">
+            <div class="assets-title"><span class="asset-stack-icon">▧</span><span><strong>Scene ingredients</strong><small>Set the opening and closing frames for your motion.</small></span></div>
+            <label class="frame-tile first-frame" for="firstFrameInput"><img src="/f30881536.jpg" id="firstFrameThumb" alt="Selected opening frame" /><span class="frame-number">01</span><span class="frame-tile-text"><strong>Opening frame</strong><small>f30881536.jpg · 1920 × 1080</small></span><span class="replace-mark">↗</span></label>
+            <button class="frame-tile ending-frame" id="addLastFrame"><span class="add-frame-icon">+</span><span class="frame-tile-text"><strong>Add a closing frame</strong><small>Optional · guides the final moment</small></span><span class="optional-pill">OPTIONAL</span></button>
+            <input id="firstFrameInput" type="file" accept="image/png,image/jpeg" hidden />
+            <input id="lastFrameInput" type="file" accept="image/png,image/jpeg" hidden />
+            <div class="asset-tip"><span>↗</span> Start with a photo with room to move.</div>
+          </section>
+
+          <section class="motion-panel" id="motionPanel" hidden>
+            <div class="panel-heading"><div><span class="panel-index">02 / BRING TO LIFE</span><h2>Give the scene a direction</h2></div><span class="connected-label" id="veoConnection"><i></i> DEMO PREVIEW</span></div>
+            <p class="panel-description">Describe a small, believable camera move. Keep the room and furniture true to the original.</p>
+            <label class="field-label" for="videoPrompt">Motion direction</label>
+            <textarea class="prompt-field" id="videoPrompt" rows="4">A slow, elegant camera push toward the sofa. Soft daylight shifts through the room. Keep the sofa design, proportions, fabric, and color unchanged. Premium home listing film, natural movement, realistic details.</textarea>
+            <div class="prompt-options"><label>Scene length<select id="sceneDuration"><option value="8">8 seconds</option><option value="6">6 seconds</option><option value="4">4 seconds</option></select></label><label>Aspect ratio<select id="aspectRatio"><option value="9:16">9:16 · Vertical</option><option value="16:9">16:9 · Landscape</option></select></label><label>Resolution<select id="resolution"><option>1080p</option><option>720p</option></select></label></div>
+            <div class="frame-summary"><span><img src="/f30881536.jpg" alt="" /> Opening frame selected</span><span id="lastFrameSummary">+ Add closing frame</span></div>
+            <div class="panel-divider"></div><div class="panel-bottom-row"><button class="secondary-button" id="backToAudio">← Voiceover</button><button class="primary-button" id="generateVideo"><span class="sparkle">✳</span> Generate scene <span class="button-arrow">→</span></button></div>
+            <div class="inline-feedback" id="videoFeedback" role="status" hidden></div>
+          </section>
+
+          <section class="finish-panel" id="finishPanel" hidden>
+            <div class="panel-heading"><div><span class="panel-index">03 / POLISH & EXPORT</span><h2>Make it ready to share</h2></div><span class="connected-label"><i></i> MP4</span></div>
+            <p class="panel-description">Keep the voiceover in front and add a few finishing touches before export.</p>
+            <div class="finish-setting"><div><strong>Extend the scene to fit</strong><small>Repeat the short scene so narration plays through.</small></div><label class="toggle"><input id="loopScene" type="checkbox" checked /><span></span></label></div>
+            <div class="finish-setting"><div><strong>Include Chinese captions</strong><small>Add a selectable subtitle track to the MP4.</small></div><label class="toggle"><input id="subtitles" type="checkbox" checked /><span></span></label></div>
+            <div class="finish-setting"><div><strong>Platform safe margins</strong><small>Keep important text clear of app controls.</small></div><label class="toggle"><input id="safeMargins" type="checkbox" checked /><span></span></label></div>
+            <div class="export-summary"><span class="summary-icon">▣</span><span><strong>Vertical social video</strong><small>MP4 · H.264 · 1080 × 1920 · 24 fps</small></span><span class="summary-duration" id="exportDuration">~0:12</span></div>
+            <div class="panel-divider"></div><div class="panel-bottom-row"><button class="secondary-button" id="backToMotion">← Motion</button><button class="primary-button" id="downloadVideo"><span>↓</span> Download MP4</button></div>
+            <div class="inline-feedback" id="exportFeedback" role="status" hidden></div>
+          </section>
+
+          <footer class="workspace-footer"><span>Good stories help people picture themselves there.</span><span>Made with care in Singapore <b>✳</b></span></footer>
+        </div>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"><span class="toast-mark">✓</span><span id="toastMessage">Saved</span></div>
+    <div class="modal-backdrop" id="modalBackdrop" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="modal-close" id="modalClose" aria-label="Close dialog">×</button><div class="modal-mark">✳</div><h2 id="modalTitle">Connect your creative models</h2><p id="modalBody">Live generation needs a Qwen3-TTS endpoint and Vertex AI access. Your local workspace is using the included sample media for preview.</p><div class="connection-list"><div><span class="connection-icon">声</span><span><strong>Qwen3-TTS</strong><small>Voice cloning from your Xiaoyi sample</small></span><em class="status-demo">NOT CONNECTED</em></div><div><span class="connection-icon veo-icon">V</span><span><strong>Vertex AI · Veo 3.1</strong><small>Image-to-video scene generation</small></span><em class="status-demo">NOT CONNECTED</em></div></div><p class="modal-help">To make these actions live, configure the backend endpoints in <code>.env</code>. The editor and sample export work without cloud credentials.</p><button class="primary-button modal-done" id="modalDone">Got it</button></section></div>
+    <div class="edit-drawer" id="editDrawer" aria-hidden="true"><div class="drawer-head"><div><span class="panel-index">REFINE YOUR SCENE</span><h2>What should change?</h2></div><button id="closeDrawer" aria-label="Close edit panel">×</button></div><p>Describe a single change and Veo will create a new take from your opening frame.</p><label for="editPrompt">Edit instruction</label><textarea id="editPrompt" rows="5">Bring the camera a little closer to the sofa and let the late afternoon light move across the cushions.</textarea><div class="edit-note"><span>✳</span><span>Each edit creates a new video generation. Your current preview stays available.</span></div><button class="primary-button" id="applyEdit">Generate new take <span class="button-arrow">→</span></button><div class="inline-feedback" id="editFeedback" role="status" hidden></div></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
