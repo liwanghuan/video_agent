@@ -5,9 +5,10 @@ let savedDraft = null;
 try { savedDraft = JSON.parse(localStorage.getItem("framehouse-draft") || "null"); } catch {}
 if (savedDraft?.transcript) $("#transcript").value = savedDraft.transcript;
 if (savedDraft?.videoPrompt) $("#videoPrompt").value = savedDraft.videoPrompt;
+if (savedDraft?.ideaBrief) $("#ideaBrief").value = savedDraft.ideaBrief;
 
 const state = {
-  api: { qwen: false, vertex: false, demo: true },
+  api: { qwen: false, vertex: false, ideas: false, demo: true },
   audioBlob: null,
   audioUrl: null,
   audioReady: false,
@@ -16,7 +17,8 @@ const state = {
   firstFrame: null,
   lastFrame: null,
   selectedVoice: "Xiaoyi",
-  currentStep: "audio",
+  currentStep: "ideas",
+  ideaImages: [],
   originalScript: $("#transcript").value.trim(),
   isDemoVideo: true,
 };
@@ -71,6 +73,7 @@ function saveDraft() {
   const draft = {
     transcript: transcript.value,
     videoPrompt: $("#videoPrompt").value,
+    ideaBrief: $("#ideaBrief").value,
     voice: state.selectedVoice,
     aspectRatio: $("#aspectRatio").value,
     duration: $("#sceneDuration").value,
@@ -89,10 +92,13 @@ function setStep(step) {
   state.currentStep = step;
   $$(".step").forEach((button) => button.classList.toggle("active", button.dataset.step === step));
   $("#editorColumn")?.setAttribute("hidden", "");
+  $("#ideasPanel").hidden = step !== "ideas";
+  $(".studio-grid").hidden = step === "ideas";
+  $("#assets").hidden = step === "ideas";
   $("#motionPanel").hidden = step !== "motion";
   $("#finishPanel").hidden = step !== "finish";
-  const heading = step === "audio" ? "Start with your words" : step === "motion" ? "Give the scene a direction" : "Make it ready to share";
-  document.title = `${heading} — Framehouse`;
+  const heading = step === "ideas" ? "Find your idea" : step === "audio" ? "Start with your words" : step === "motion" ? "Give the scene a direction" : "Make it ready to share";
+  document.title = `${heading} — Video Agent`;
   if (step === "audio") {
     $(".editor-column").hidden = false;
   } else {
@@ -113,6 +119,7 @@ async function refreshApiStatus() {
     $$(".status-demo")[0].classList.toggle("status-live", state.api.qwen);
     $$(".status-demo")[1].textContent = live ? "CONNECTED" : "NOT CONNECTED";
     $$(".status-demo")[1].classList.toggle("status-live", live);
+    $("#ideasConnection").innerHTML = state.api.ideas ? '<i style="background:#89ad51"></i> CLAUDE CONNECTED' : '<i></i> NOT CONNECTED';
     $(".demo-tag").innerHTML = `<i></i> ${state.api.qwen || live ? "Connected workspace" : "Demo project"}`;
   } catch {
     // The static UI remains usable as a sample workspace when no local server is running.
@@ -128,6 +135,222 @@ async function apiError(response) {
     // Use the HTTP status when the server did not return JSON.
   }
   return new Error(message);
+}
+
+function downscaleImage(source, maxSide = 1280) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(image.naturalWidth * scale);
+      canvas.height = Math.round(image.naturalHeight * scale);
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    image.onerror = () => reject(new Error("Couldn’t read that image file."));
+    image.src = source;
+  });
+}
+
+function renderIdeaMaterials() {
+  const container = $("#ideaMaterials");
+  container.querySelectorAll("figure").forEach((node) => node.remove());
+  state.ideaImages.forEach((item, index) => {
+    const figure = document.createElement("figure");
+    const image = document.createElement("img");
+    image.src = item.dataUrl;
+    image.alt = item.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${item.name}`);
+    remove.addEventListener("click", () => {
+      state.ideaImages.splice(index, 1);
+      renderIdeaMaterials();
+    });
+    figure.append(image, remove);
+    container.insertBefore(figure, container.querySelector(".ideas-add"));
+  });
+  const count = state.ideaImages.length;
+  $("#ideaMaterialCount").textContent = `${count} photo${count === 1 ? "" : "s"} · up to 6`;
+  container.querySelector(".ideas-add").hidden = count >= 6;
+}
+
+async function addIdeaImages(files) {
+  for (const file of [...files]) {
+    if (state.ideaImages.length >= 6) {
+      showToast("Up to 6 photos per idea session");
+      break;
+    }
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) continue;
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      state.ideaImages.push({ name: file.name, dataUrl: await downscaleImage(objectUrl) });
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+  $("#ideaImagesInput").value = "";
+  renderIdeaMaterials();
+}
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function safeUrl(value) {
+  return /^https?:\/\//i.test(String(value || "")) ? String(value) : "";
+}
+
+function useIdea(idea) {
+  if (idea.script) transcript.value = String(idea.script).slice(0, 1200);
+  if (idea.motion) $("#videoPrompt").value = idea.motion;
+  updateTranscript();
+  setStep("audio");
+  transcript.focus();
+  showToast("Idea added to your script");
+}
+
+function renderIdeas(plan) {
+  const results = $("#ideasResults");
+  results.replaceChildren();
+
+  const materials = element("section", "ideas-section");
+  materials.append(element("span", "panel-index", "YOUR MATERIALS"), element("h3", "", "What you have, and what to add"));
+  if (plan.materials?.summary) materials.append(element("p", "", plan.materials.summary));
+  if (plan.materials?.strengths?.length) {
+    const list = element("ul");
+    plan.materials.strengths.forEach((item) => list.append(element("li", "", item)));
+    materials.append(list);
+  }
+  if (plan.materials?.gaps?.length) {
+    materials.append(element("p", "", "Worth providing before you record:"));
+    const list = element("ul");
+    plan.materials.gaps.forEach((gap) => {
+      const item = element("li", "ideas-gap");
+      item.append(element("strong", "", gap.item || ""), document.createTextNode(gap.why ? ` — ${gap.why}` : ""));
+      list.append(item);
+    });
+    materials.append(list);
+  }
+  results.append(materials);
+
+  if (plan.trends?.length) {
+    const trends = element("section", "ideas-section");
+    trends.append(element("span", "panel-index", "WORKING RIGHT NOW"), element("h3", "", "Accounts and formats to learn from"));
+    const list = element("div", "trend-list");
+    plan.trends.forEach((trend) => {
+      const card = element("article", "trend-card");
+      const header = element("header");
+      const url = safeUrl(trend.url);
+      const name = element("strong", "", trend.account || "Trending format");
+      if (url) {
+        const link = element("a", "", trend.account || url);
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        name.replaceChildren(link);
+      }
+      header.append(name, element("span", "", trend.platform || ""));
+      card.append(header, element("div", "", trend.style || ""));
+      if (trend.takeaway) card.append(element("div", "takeaway", `Borrow: ${trend.takeaway}`));
+      list.append(card);
+    });
+    trends.append(list);
+    results.append(trends);
+  }
+
+  const ideas = element("section", "ideas-section");
+  ideas.append(element("span", "panel-index", "VIDEO IDEAS"), element("h3", "", "Pick one to start your script"));
+  const list = element("div", "idea-list");
+  (plan.ideas || []).forEach((idea) => {
+    const card = element("article", "idea-card");
+    card.append(element("h4", "", idea.title || "Idea"));
+    if (idea.angle) card.append(element("p", "angle", idea.angle));
+    const script = element("p", "script");
+    const hook = String(idea.hook || "");
+    const body = String(idea.script || "");
+    if (hook && body.startsWith(hook)) {
+      script.append(element("span", "hook", hook), document.createTextNode(body.slice(hook.length)));
+    } else {
+      script.textContent = body;
+    }
+    card.append(script);
+    if (idea.shots?.length) {
+      const shots = element("ul", "shots");
+      idea.shots.forEach((shot) => shots.append(element("li", "", shot)));
+      card.append(shots);
+    }
+    const use = element("button", "primary-button");
+    use.type = "button";
+    use.innerHTML = 'Use this idea <span class="button-arrow">→</span>';
+    use.addEventListener("click", () => useIdea(idea));
+    card.append(use);
+    list.append(card);
+  });
+  ideas.append(list);
+  results.append(ideas);
+
+  if (plan.sources?.length) {
+    const sources = element("p", "ideas-sources", "Sources: ");
+    plan.sources.forEach((source) => {
+      const url = safeUrl(source.url);
+      if (!url) return;
+      const link = element("a", "", source.title || url);
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      sources.append(link);
+    });
+    results.append(sources);
+  }
+}
+
+async function generateIdeas() {
+  const button = $("#generateIdeas");
+  clearFeedback("#ideasFeedback");
+  if (!state.api.ideas) {
+    feedback("#ideasFeedback", "Idea generation isn’t connected. Add ANTHROPIC_API_KEY to .env and restart the server.", "error");
+    return;
+  }
+  if (!$("#ideaBrief").value.trim() && !state.ideaImages.length) {
+    feedback("#ideasFeedback", "Describe what you’re making or add a few photos first.", "error");
+    $("#ideaBrief").focus();
+    return;
+  }
+  setBusy(button, true, "Researching… this can take a minute");
+  try {
+    const useDraft = $("#ideaUseDraft").checked;
+    const images = state.ideaImages.map((item) => ({ name: item.name, ...base64Part(item.dataUrl) }));
+    if (useDraft) {
+      const opening = await downscaleImage(state.firstFrame || "/f30881536.jpg");
+      images.unshift({ name: "current opening frame", ...base64Part(opening) });
+    }
+    const response = await fetch("/api/ideas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        brief: $("#ideaBrief").value.trim(),
+        platform: $("#ideaPlatform").value,
+        transcript: useDraft ? transcript.value.trim() : "",
+        images: images.slice(0, 6),
+      }),
+    });
+    if (!response.ok) throw await apiError(response);
+    renderIdeas(await response.json());
+    feedback("#ideasFeedback", "Ideas ready. Pick one to drop it into your script, or edit your brief and try again.");
+    showToast("Ideas are ready");
+  } catch (error) {
+    feedback("#ideasFeedback", error.message, "error");
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 async function generateAudio() {
@@ -303,7 +526,7 @@ async function exportVideo() {
     if (state.isDemoVideo) {
       const anchor = document.createElement("a");
       anchor.href = "/edge_samples/demo_listing_reel.mp4";
-      anchor.download = "framehouse-demo-listing-reel.mp4";
+      anchor.download = "video-agent-demo-reel.mp4";
       anchor.click();
       feedback("#exportFeedback", "Downloaded the included demo reel. Generate a Veo scene and voiceover to export your own cut.");
       return;
@@ -327,7 +550,7 @@ async function exportVideo() {
     const url = URL.createObjectURL(mp4);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "framehouse-listing-reel.mp4";
+    anchor.download = "video-agent-reel.mp4";
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 15000);
     feedback("#exportFeedback", "Your MP4 is ready and downloaded.");
@@ -429,6 +652,11 @@ $("#closeDrawer").addEventListener("click", closeDrawer);
 $("#applyEdit").addEventListener("click", applyEdit);
 $("#backToAudio").addEventListener("click", () => setStep("audio"));
 $("#backToMotion").addEventListener("click", () => setStep("motion"));
+$$('.step[data-step="ideas"]').forEach((button) => button.addEventListener("click", () => setStep("ideas")));
+$("#generateIdeas").addEventListener("click", generateIdeas);
+$("#skipIdeas").addEventListener("click", () => setStep("audio"));
+$("#ideaImagesInput").addEventListener("change", (event) => addIdeaImages(event.target.files));
+$("#ideaBrief").addEventListener("input", () => { $("#saveLabel").textContent = "Unsaved changes"; });
 $$('.step[data-step="audio"]').forEach((button) => button.addEventListener("click", () => setStep("audio")));
 $$('.step[data-step="motion"]').forEach((button) => button.addEventListener("click", () => setStep("motion")));
 $$('.step[data-step="finish"]').forEach((button) => button.addEventListener("click", () => setStep("finish")));
@@ -501,4 +729,6 @@ if (savedDraft?.platform) $("#platformButton").childNodes[0].textContent = `${sa
 $("#aspectRatio").dispatchEvent(new Event("change"));
 $("#sceneDuration").dispatchEvent(new Event("change"));
 $("#saveLabel").textContent = "All changes saved";
+renderIdeaMaterials();
+setStep("ideas");
 refreshApiStatus();

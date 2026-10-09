@@ -1,13 +1,16 @@
 {
-  "name": "framehouse-listing-studio",
+  "name": "video-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "A listing video workspace with Qwen voiceover and Vertex AI Veo generation.",
+  "description": "A short-video agent: idea research with Claude, Qwen voiceover, and Vertex AI Veo scene generation.",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1"
   }
 }
