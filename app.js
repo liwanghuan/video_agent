@@ -119,7 +119,7 @@ async function refreshApiStatus() {
     $$(".status-demo")[0].classList.toggle("status-live", state.api.qwen);
     $$(".status-demo")[1].textContent = live ? "CONNECTED" : "NOT CONNECTED";
     $$(".status-demo")[1].classList.toggle("status-live", live);
-    $("#ideasConnection").innerHTML = state.api.ideas ? '<i style="background:#89ad51"></i> CLAUDE CONNECTED' : '<i></i> NOT CONNECTED';
+    $("#ideasConnection").innerHTML = state.api.ideas ? '<i style="background:#89ad51"></i> GEMINI CONNECTED' : '<i></i> NOT CONNECTED';
     $(".demo-tag").innerHTML = `<i></i> ${state.api.qwen || live ? "Connected workspace" : "Demo project"}`;
   } catch {
     // The static UI remains usable as a sample workspace when no local server is running.
@@ -316,7 +316,7 @@ async function generateIdeas() {
   const button = $("#generateIdeas");
   clearFeedback("#ideasFeedback");
   if (!state.api.ideas) {
-    feedback("#ideasFeedback", "Idea generation isn’t connected. Add ANTHROPIC_API_KEY to .env and restart the server.", "error");
+    feedback("#ideasFeedback", "Idea generation isn’t connected. Add GEMINI_API_KEY to .env and restart the server.", "error");
     return;
   }
   if (!$("#ideaBrief").value.trim() && !state.ideaImages.length) {

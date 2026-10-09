@@ -25,8 +25,9 @@ const location = process.env.VERTEX_LOCATION || "us-central1";
 const model = process.env.VERTEX_MODEL_ID || "veo-3.1-fast-generate-001";
 const qwenEndpoint = process.env.QWEN_TTS_ENDPOINT || "";
 const outputUri = process.env.VERTEX_OUTPUT_URI || "";
-const ideasModel = process.env.IDEAS_MODEL_ID || "claude-opus-5-5";
-const ideasConfigured = Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+const ideasModel = process.env.IDEAS_MODEL_ID || "gemini-3.8-flash";
+const geminiApiKey = process.env.GEMINI_API_KEY || "";
+const ideasConfigured = Boolean(geminiApiKey);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -202,22 +203,7 @@ Reply with only a JSON object, no prose before or after it and no markdown fence
 }
 Give 3–5 trends and exactly 3 ideas. All user-facing text other than "hook" and "script" should be in English.`;
 
-let anthropicClient;
-function anthropic() {
-  if (!anthropicClient) {
-    let Anthropic;
-    try {
-      ({ Anthropic } = require("@anthropic-ai/sdk"));
-    } catch {
-      throw Object.assign(new Error("Run npm install to add the Anthropic SDK used for idea generation."), { statusCode: 503 });
-    }
-    anthropicClient = new Anthropic();
-  }
-  return anthropicClient;
-}
-
-function parseIdeasJson(message) {
-  const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+function parseIdeasJson(text) {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start === -1 || end <= start) throw new Error("The idea model did not return a plan. Try again.");
@@ -228,31 +214,26 @@ function parseIdeasJson(message) {
   }
 }
 
-function searchSources(messages) {
+function searchSources(candidate) {
   const sources = new Map();
-  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type !== "web_search_tool_result" || !Array.isArray(block.content)) continue;
-      for (const result of block.content) {
-        if (result.url && !sources.has(result.url)) sources.set(result.url, { url: result.url, title: result.title || result.url });
-      }
-    }
+  for (const chunk of candidate?.groundingMetadata?.groundingChunks || []) {
+    const url = chunk.web?.uri;
+    if (url && !sources.has(url)) sources.set(url, { url, title: chunk.web.title || url });
   }
   return [...sources.values()].slice(0, 10);
 }
 
 async function generateIdeas(body) {
-  if (!ideasConfigured) throw Object.assign(new Error("Set ANTHROPIC_API_KEY in .env to turn on idea generation."), { statusCode: 503 });
+  if (!ideasConfigured) throw Object.assign(new Error("Set GEMINI_API_KEY in .env to turn on idea generation."), { statusCode: 503 });
   const platform = String(body.platform || "Rednote").slice(0, 40);
   const images = (Array.isArray(body.images) ? body.images : [])
     .filter((image) => /^image\/(jpeg|png|webp|gif)$/.test(image?.mimeType) && image?.data)
     .slice(0, 6);
-  const content = images.flatMap((image, index) => [
-    { type: "text", text: `Photo ${index + 1}${image.name ? ` (${String(image.name).slice(0, 80)})` : ""}:` },
-    { type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } },
+  const parts = images.flatMap((image, index) => [
+    { text: `Photo ${index + 1}${image.name ? ` (${String(image.name).slice(0, 80)})` : ""}:` },
+    { inlineData: { mimeType: image.mimeType, data: image.data } },
   ]);
-  content.push({
-    type: "text",
+  parts.push({
     text: [
       `Target platform: ${platform}`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}`,
@@ -262,29 +243,24 @@ async function generateIdeas(body) {
     ].join("\n"),
   });
 
-  const client = anthropic();
-  const params = {
-    model: ideasModel,
-    max_tokens: 32000,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    output_config: { effort: "medium" },
-    system: IDEAS_SYSTEM,
-    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 6 }],
-    messages: [{ role: "user", content }],
-  };
-  const responses = [];
-  let message = await client.beta.messages.stream(params).finalMessage();
-  responses.push(message);
-  // Server-side web search can pause a long turn; resend the paused turn so it resumes.
-  for (let continuations = 0; message.stop_reason === "pause_turn" && continuations < 3; continuations += 1) {
-    params.messages = [{ role: "user", content }, { role: "assistant", content: message.content }];
-    message = await client.beta.messages.stream(params).finalMessage();
-    responses.push(message);
-  }
-  if (message.stop_reason === "refusal") throw new Error("The idea model declined this request. Try rewording the brief.");
-  if (message.stop_reason === "max_tokens") throw new Error("The idea plan was cut off. Try a shorter brief.");
-  return { ...parseIdeasJson(message), sources: searchSources(responses), model: message.model };
+  const result = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ideasModel)}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: IDEAS_SYSTEM }] },
+      contents: [{ role: "user", parts }],
+      tools: [{ google_search: {} }],
+      generationConfig: { maxOutputTokens: 32000 },
+    }),
+  });
+  const payload = await result.json().catch(() => ({}));
+  if (!result.ok) throw new Error(payload.error?.message || `Gemini request failed with HTTP ${result.status}.`);
+  if (payload.promptFeedback?.blockReason) throw new Error("The idea model declined this request. Try rewording the brief.");
+  const candidate = payload.candidates?.[0];
+  if (["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION"].includes(candidate?.finishReason)) throw new Error("The idea model declined this request. Try rewording the brief.");
+  if (candidate?.finishReason === "MAX_TOKENS") throw new Error("The idea plan was cut off. Try a shorter brief.");
+  const text = (candidate?.content?.parts || []).filter((part) => part.text && !part.thought).map((part) => part.text).join("");
+  return { ...parseIdeasJson(text), sources: searchSources(candidate), model: payload.modelVersion || ideasModel };
 }
 
 function runFfmpeg(args) {

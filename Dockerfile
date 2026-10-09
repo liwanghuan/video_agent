@@ -5,9 +5,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-COPY server.js index.html styles.css app.js ./
+COPY package.json server.js index.html styles.css app.js ./
 COPY f30881536.jpg ./
 COPY edge_samples ./edge_samples
 
