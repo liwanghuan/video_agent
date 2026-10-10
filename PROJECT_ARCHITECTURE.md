@@ -22,23 +22,23 @@ The interface is a single-page application with four top-level stages. The curre
 | Stage | User intent | Main implementation |
 |---|---|---|
 | 00 · Ideas | Describe the promotion, choose a platform, add up to six photos, and receive a material review, current trend research, and three concepts. | `/api/ideas` → Gemini `generateContent` with Google Search grounding |
-| 01 · Voiceover | Develop an idea, set target duration/presenter, generate a timed script and screenplay, or skip directly to writing/editing the transcript; choose a voice and generate speech. | `/api/script` → Gemini; `/api/tts` → configured Qwen endpoint |
-| 02 · Bring to life | Choose opening/optional closing frames, camera direction, aspect ratio, resolution, and 4/6/8-second scene duration. | `/api/video` → Vertex AI Veo long-running prediction |
-| 03 · Polish & export | Review the scene, request a new take/edit, configure looping/subtitles/safe-area preview, and download an MP4. | `/api/export` → FFmpeg muxing and subtitle embedding |
+| 01 · Voiceover | Develop an idea and timed transcript, choose a voice, and generate narration. A full production plan can split narration into per-shot blocks. | `/api/script` → Gemini; `/api/tts` → configured Qwen endpoint |
+| 02 · Bring to life | Generate one scene in the classic workflow, or review/edit a multi-shot storyboard and generate each shot's narration and Veo clip in order. | `/api/video` → Vertex AI Veo long-running prediction; shot state/orchestration in `app.js` |
+| 03 · Polish & export | Mux one scene with narration, or concatenate all storyboard clips with their corresponding narration, add optional selectable subtitles, preview, and download the final MP4. | `/api/export` or `/api/export-segments` → FFmpeg |
 
-The ideas stage contains two substeps: an original idea (creator-editable) and the generated script/screenplay. The screenplay view exposes the timed hook/beats, presenter brief, shot list, visual direction, on-screen text, voiceover, audio, transitions, and sources. It can be copied or downloaded as Markdown. “Use this script” passes the voiceover and opening motion to the production workflow.
+The ideas stage contains an original idea, optional Gemini concepts, and the ADK full-video plan. The plan shows timed transcript blocks and shot cards with editable narration, opening/closing-frame prompts, and a Veo motion prompt. A shot may generate its audio and video separately; “generate all” processes them sequentially. The explicit final-export action remains disabled until every shot has both assets. The older single-scene workflow remains available for a single opening image, one voiceover, and one Veo clip.
 
 ## 3. Runtime architecture
 
 ```text
 ┌────────────────────── Browser ──────────────────────┐
 │ index.html + styles.css + app.js                    │
-│ stage UI · local draft · image downscaling · preview │
+│ stage UI · local draft · per-shot state · preview   │
 └────────────────────────┬────────────────────────────┘
                          │ same-origin HTTP / JSON / media
 ┌────────────────────────▼────────────────────────────┐
 │ Node.js server.js (static server + API orchestration)│
-│ config · input checks · provider auth · polling      │
+│ config · provider auth · Veo polling · FFmpeg export │
 └──────┬──────────────────┬───────────────────┬───────┘
        │                  │                   │
        ▼                  ▼                   ▼
@@ -54,7 +54,10 @@ The ideas stage contains two substeps: an original idea (creator-editable) and t
                            server returns video/audio
                                      │
                                      ▼
-                         FFmpeg → exported MP4
+                    ┌───────┴────────┐
+                    ▼                ▼
+          single-scene mux    multi-shot concat/mux
+             /api/export       /api/export-segments
 ```
 
 ### Browser
@@ -67,7 +70,7 @@ The ideas stage contains two substeps: an original idea (creator-editable) and t
 
 ### Node.js application server
 
-`server.js` uses Node's built-in HTTP, filesystem, and process APIs; there is no frontend bundler or npm dependency tree. It serves static files, routes `/api/*`, calls providers, and launches FFmpeg for export. `.env` is read for local development; Cloud Run values are injected as environment variables. A separate Python service in `adk_service/` provides the initial ADK multi-agent planning workflow.
+`server.js` uses Node's built-in HTTP, filesystem, and process APIs; there is no frontend bundler or npm dependency tree. It serves static files, routes `/api/*`, calls providers, and launches FFmpeg for single- and multi-shot exports. `.env` is read for local development; Cloud Run values are injected as environment variables. A separate Python service in `adk_service/` provides the ADK planning workflow; the browser then orchestrates media requests through the Node API.
 
 The Docker image is defined by `Dockerfile`: Node 22 Debian slim, FFmpeg and CA certificates, static app files and sample assets, then `node server.js`. The server listens on the injected `PORT` and binds to `0.0.0.0` in Cloud Run.
 
@@ -84,15 +87,16 @@ All API endpoints are same-origin JSON requests unless noted. Errors are returne
 | `POST /api/tts` | `text`, optional `voice` | `audio/mpeg` bytes | Proxies to `QWEN_TTS_ENDPOINT`; upstream may return MP3 bytes or JSON containing base64 audio. |
 | `POST /api/video` | `prompt`, `transcript`, `firstFrame`, optional `lastFrame`, `durationSeconds`, `aspectRatio`, `resolution` | `video/mp4` bytes | Starts Veo `predictLongRunning`, polls operation, downloads result from GCS when needed. Veo audio is disabled. |
 | `POST /api/export` | base64 `videoBase64`, `audioBase64`, `transcript`, `subtitles`, `loopVideo` | Downloadable MP4 bytes | Writes temporary files, runs FFmpeg to encode H.264/AAC and optional `mov_text` subtitle track, then removes temp directory. |
+| `POST /api/export-segments` | Ordered `segments[]` of base64 video/audio, transcript, and 4/6/8-second duration; `aspectRatio`, `resolution`, `subtitles` | Final `video/mp4` bytes | Normalizes shot video, concatenates video and matching audio tracks, pads short audio to its shot duration, holds the final frame if audio runs long, and adds optional selectable Chinese `mov_text` captions. Up to 15 shots / 120 seconds; JSON body limit 120 MiB. |
 
 ### End-to-end production sequence
 
 1. Optional planning: the browser sends the creator brief, platform, references, and optionally current draft/opening frame to `/api/ideas`. The server uses Gemini with Google Search grounding and returns source links with the structured plan.
 2. Script: `/api/script` asks Gemini for a timed Chinese voiceover and screenplay. The UI renders timing and flags a hook over three seconds or a beat over five seconds; this is a client-side warning, not a server rejection.
-3. Voice: `/api/tts` forwards text/voice/MP3 format to Qwen. The generated audio is held in browser memory and becomes the export narration.
-4. Scene: `/api/video` uploads the chosen still frame(s), English motion direction, transcript context, ratio, duration, and resolution to Veo. The server polls the long-running operation for up to 12 minutes, retrieves the returned clip, and streams it to the browser.
-5. Edit: an edit changes the prompt and triggers another Veo generation from the selected opening frame. A durable version history is not implemented.
-6. Export: `/api/export` loops the scene when requested so it can cover narration length, muxes audio/video, optionally writes subtitle text based on the transcript, and returns the final MP4 for download.
+3. **Single-scene production:** `/api/tts` forwards the transcript and selected voice to Qwen; `/api/video` sends the opening frame and silent-scene prompt to Veo. The browser holds both outputs and `/api/export` muxes Qwen audio onto the Veo clip, optionally looping the clip and embedding a selectable subtitle track.
+4. **Multi-shot production:** the ADK proposal supplies continuous shot timing, transcript-block ownership, and frame/motion prompts. The browser calls `/api/tts` for each shot with the same selected voice, then calls `/api/video` in order. Shot 1 starts from the selected/default listing photo; the browser extracts each clip's final frame and sends it as the next shot's actual opening image. Re-generating a shot invalidates downstream video takes while retaining their audio.
+5. **Final assembly:** `/api/export-segments` receives all ordered MP4/MP3 pairs and uses FFmpeg to normalize and concatenate them into one MP4. Each narration starts at its shot boundary; short audio is padded with silence, and when speech exceeds the planned shot duration the video holds its last frame rather than cutting speech. Optional captions are selectable MP4 subtitles; their timing is estimated from text length, not speech recognition.
+6. **Editing and export limits:** prompt/text edits are per active browser session; revised narration invalidates that shot's audio and downstream video chain. No version history or saved generated media is implemented. Single-scene export can loop; storyboard export preserves shot order and per-shot audio.
 
 ## 5. Model and cloud boundaries
 
@@ -100,7 +104,7 @@ All API endpoints are same-origin JSON requests unless noted. Errors are returne
 
 Gemini is used for idea research and script/screenplay generation. `GEMINI_API_KEY` gates both features; `IDEAS_MODEL_ID` selects the model (default in code: `gemini-3.8-flash`). The app calls the Generative Language API from the server. Idea research enables Google Search grounding; script generation requests JSON without grounding. Do not send this key to the browser.
 
-The production-plan path uses ADK with Vertex AI Gemini in `adk_service/`, currently running Transcript Planner → Scene Planner → Plan Reviewer. It defaults to `gemini-3.7-flash` (override with `ADK_MODEL_ID`) and uses its Cloud Run service identity rather than `GEMINI_API_KEY`. When configured, the Ideas screen exposes a plan-only action and can copy the proposed transcript plus first scene prompt into the existing single-scene workflow; segment generation, approval persistence, and job execution are not yet integrated.
+The production-plan path uses ADK with Vertex AI Gemini in `adk_service/`, currently running Transcript Planner → Scene Planner → Plan Reviewer. It defaults to `gemini-3.7-flash` (override with `ADK_MODEL_ID`) and uses its Cloud Run service identity rather than `GEMINI_API_KEY`. The ADK service returns a proposal and does not call Qwen/Veo or persist an approval/job. The browser's storyboard editor runs the per-shot Qwen and Veo requests through the Node API after creator review.
 
 ### Qwen3-TTS
 
@@ -139,10 +143,10 @@ These are important current boundaries, not assumptions to build on:
 - **Browser-local drafts only:** `localStorage` is per-browser/device and not a backup or collaboration mechanism.
 - **Ephemeral generated media:** generated buffers are transferred directly; browser object URLs are temporary. GCS is used as Veo staging only.
 - **No durable job model:** existing Gemini/Veo calls are synchronous from the UI perspective. Veo is polled inside one server request; there is no queue, job ID, retry workflow, or resumable progress state. ADK planning is also synchronous and its one-invocation session is in memory.
-- **Request memory and size:** JSON/base64 image and media payloads can be large. `readJson` has a global limit (120 MiB), with lower per-route limits for planning/TTS. Large media and concurrent FFmpeg exports can consume substantial memory.
+- **Request memory and size:** JSON/base64 image and media payloads can be large. `readJson` has a global limit (120 MiB), with lower per-route limits for planning/TTS; multi-shot export accepts at most 15 clips and 120 seconds. Large media and concurrent FFmpeg exports can consume substantial memory, so size Cloud Run memory/concurrency from observed workloads.
 - **Authentication is deployment-level:** this code does not implement app user login or per-user authorization. Keep the Cloud Run service behind a suitable authenticated access layer; do not expose paid model endpoints without abuse controls.
 - **Provider flags are configuration checks:** `/api/health` does not make test calls to confirm readiness.
-- **Export behavior:** longer narration is handled by looping the generated scene, not by generating a multi-shot film. Subtitle text is split into character/punctuation-based chunks and distributed across the audio duration; it is not aligned to recognized speech timestamps.
+- **Export behavior:** single-scene narration can loop the source video; multi-shot output concatenates the generated clips and their matching audio. Shot audio alignment is boundary-level, not phoneme/word-level. Selectable subtitle timing is estimated from transcript length and shot duration, not aligned to recognized speech.
 - **Input and safety:** prompts and uploads are model inputs. Add validation, size/type controls, user consent for likeness/voice use, retention policy, and rate limits before a public multi-user launch.
 - **Sample media:** bundled samples are demos; they are not evidence that models are connected. Respect source/usage rights when replacing sample assets.
 
@@ -168,8 +172,8 @@ Recommended evolution paths; none are implemented unless noted above:
 3. **Turn long calls into jobs:** create an API job record, enqueue Gemini/Veo/export work, return a job ID, expose progress/status/cancel/retry, and persist generated outputs. Avoid holding a single Cloud Run request open during Veo polling.
 4. **Add identity and authorization:** authenticate users, scope every project/asset/job query by tenant, protect model spend with quotas/rate limits, and audit generation/export events.
 5. **Make generation stages versioned:** store each script and prompt revision; model edits should create new versions rather than overwrite state. Support re-running audio/video independently.
-6. **Improve screenplay-to-video:** generate a multi-shot plan and match scene durations, images, and narration beats; current Veo integration creates one scene per request.
-7. **Align subtitles to speech:** use speech marks or forced alignment instead of assigning the full transcript to a single segment.
+6. **Persist storyboard assets and versions:** the current multi-shot UI generates and assembles per-shot assets in browser memory; store each prompt, frame, audio/video output, and edit version durably in Cloud Storage and a project database.
+7. **Improve synchronization:** use Qwen timing metadata or forced alignment to place speech and subtitle cues precisely within each shot instead of estimating subtitle timing by character count.
 8. **Add tests and provider adapters:** unit-test request validation and transformations, contract-test Gemini/Qwen/Vertex adapters with fixtures, and add end-to-end tests for the workflow using mocked providers.
 9. **Improve observability:** structured logs with request/job IDs, provider latency/error metrics, safe redaction, and alerts for failed generations and cost spikes.
 10. **Centralize configuration and schemas:** validate environment at startup and define JSON schemas for model responses so prompt/model drift is surfaced early.

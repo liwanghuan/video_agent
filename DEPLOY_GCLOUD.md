@@ -10,7 +10,7 @@ Browser → Framehouse (Cloud Run) → Qwen3-TTS HTTP service
                               └→ Cloud Storage (temporary Veo output)
 ```
 
-The Node app, website, `/api/tts`, `/api/video`, `/api/export`, and FFmpeg muxing are in this repository. Veo is a managed Vertex model, not a container you deploy. Qwen3-TTS is an open model and must run as a separate inference service. See the [official Qwen3-TTS repository](https://github.com/QwenLM/Qwen3-TTS) for model setup.
+The Node app, website, `/api/tts`, `/api/video`, `/api/export`, `/api/export-segments`, and FFmpeg mux/assembly are in this repository. Veo is a managed Vertex model, not a container you deploy. Qwen3-TTS is an open model and must run as a separate inference service. See the [official Qwen3-TTS repository](https://github.com/QwenLM/Qwen3-TTS) for model setup.
 
 ## 1. Prepare the Google Cloud project
 
@@ -95,7 +95,7 @@ Use the canonical Cloud Run service URL for `QWEN_TTS_ENDPOINT`. Framehouse auto
 
 ## 3. Deploy the ADK production-planning service
 
-The separate Python service runs three ADK roles in order: Transcript Planner, Scene Planner, and Plan Reviewer. It returns a versioned proposal only; it does not start Qwen or Veo jobs, save project state, or bypass the user's approval. Framehouse calls it through authenticated Cloud Run service-to-service access. The planner uses Vertex AI Gemini through its Cloud Run service identity; no Gemini API key is needed for this service.
+The separate Python service runs three ADK roles in order: Transcript Planner, Scene Planner, and Plan Reviewer. It returns timed transcript blocks plus editable per-shot opening-frame, closing-frame, and Veo-motion prompts; it does not call Qwen or Veo, save project state, or bypass the creator's review. After review, the browser orchestrates each Qwen audio request and Veo video request through the Framehouse Node API. Veo clips are generated sequentially: the actual extracted final frame of one shot becomes the next shot's opening image. Framehouse calls the planner through authenticated Cloud Run service-to-service access. The planner uses Vertex AI Gemini through its Cloud Run service identity; no Gemini API key is needed for this service.
 
 Create a least-privilege runtime identity and grant Vertex AI access:
 
@@ -165,12 +165,12 @@ gcloud run deploy "$RUN_SERVICE" \
   --image "$STUDIO_IMAGE" \
   --region "$REGION" \
   --service-account "$RUN_SA_EMAIL" \
-  --memory 2Gi --cpu 2 --timeout 900 --concurrency 4 --max-instances 5 \
+  --memory 2Gi --cpu 2 --timeout 900 --concurrency 1 --max-instances 5 \
   --no-allow-unauthenticated \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},VERTEX_LOCATION=${VERTEX_REGION},VERTEX_MODEL_ID=veo-3.1-generate-001,VERTEX_OUTPUT_URI=gs://${BUCKET}/framehouse/,QWEN_TTS_ENDPOINT=${QWEN_URL}"
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},VERTEX_LOCATION=${VERTEX_REGION},VERTEX_MODEL_ID=veo-3.1-fast-generate-001,VERTEX_OUTPUT_URI=gs://${BUCKET}/framehouse/,QWEN_TTS_ENDPOINT=${QWEN_URL}"
 ```
 
-`veo-3.1-generate-001` is the model ID currently used by this app. To use Veo 3.1 Fast, verify your access/settings in the [Veo model guide](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/veo/3-1-generate-preview), then set `VERTEX_MODEL_ID=veo-3.1-fast-generate-001`. The app supports 4-, 6-, or 8-second scenes and disables Veo audio because Qwen generates the narration.
+The app defaults to `veo-3.1-fast-generate-001`; change `VERTEX_MODEL_ID` only to a model available to your project and region. The app supports 4-, 6-, or 8-second scenes and disables Veo audio because Qwen generates the narration. The conservative `--concurrency 1` setting limits overlapping FFmpeg exports and their temporary media buffers; raise it only after measuring memory use and request latency.
 
 For a Qwen provider that needs a bearer token, save it in Secret Manager and grant the runtime identity `roles/secretmanager.secretAccessor` on that secret. Then bind it as `QWEN_TTS_TOKEN` with `--update-secrets="QWEN_TTS_TOKEN=SECRET_NAME:SECRET_VERSION"`. Do not pass secrets in `--set-env-vars` or bake them into the image. See [Cloud Run secrets](https://docs.cloud.google.com/run/docs/configuring/services/secrets).
 
@@ -193,7 +193,11 @@ TOKEN="$(gcloud auth print-identity-token)"
 curl -H "Authorization: Bearer ${TOKEN}" "${STUDIO_URL}/api/health"
 ```
 
-The response should report `qwen: true` and `vertex: true` once their configuration is present. Test audio generation, Veo video generation from an opening frame, then MP4 export. Inspect logs when needed:
+The response should report `qwen: true` and `vertex: true` once their configuration is present. Test the single-scene path (generate Qwen audio, generate a Veo clip, then **Merge voiceover · Download MP4**). For a storyboard, generate every shot's audio/video in order, then use **Assemble shots + audio · Download MP4**; this calls `POST /api/export-segments` to concatenate the clips, mux each matching narration track, and optionally include a selectable Chinese subtitle track. If a Qwen clip outlasts its planned shot, assembly holds the Veo clip's final frame rather than cutting the narration.
+
+The multi-shot export route accepts up to 15 shots and 120 seconds, with a maximum 120 MiB JSON request body. It uses the Cloud Run container's temporary disk and FFmpeg; the deployment above provisions 2 GiB memory and serializes requests per instance to reduce OOM risk. Monitor memory/latency before increasing concurrency. `/api/video`, `/api/export`, and `/api/export-segments` are **POST** routes and are not meant to be opened as browser GET URLs; a direct GET returns `API route not found`.
+
+Inspect logs when needed:
 
 ```bash
 gcloud run services logs read "$RUN_SERVICE" --region "$REGION" --limit 100
@@ -204,7 +208,7 @@ gcloud run services logs read framehouse-qwen --region "$REGION" --limit 100
 
 - Veo generation polls a long-running operation for up to 12 minutes; Cloud Run's 900-second request timeout leaves time for processing and transfer.
 - Add a Cloud Storage lifecycle policy for old generated clips. Monitor bucket growth.
-- FFmpeg muxing buffers media in the Framehouse container. Monitor memory and concurrency; increase resources based on measured load.
+- FFmpeg muxing/assembly uses temporary local files and buffers media in the Framehouse container. The multi-shot browser request contains base64 media; keep it below the 120 MiB API limit. Monitor memory and request duration, and increase concurrency/resources based on measured load.
 - Configure budget alerts, Cloud Run maximum instances, and Vertex quotas. Budget alerts notify but do not cap spend.
 - The Qwen GPU service can incur charges when active. Start with a low maximum instance count and confirm scale-to-zero behavior and cold-start time.
 
