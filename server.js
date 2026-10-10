@@ -203,14 +203,14 @@ Reply with only a JSON object, no prose before or after it and no markdown fence
 }
 Give 3–5 trends and exactly 3 ideas. All user-facing text other than "hook" and "script" should be in English.`;
 
-function parseIdeasJson(text) {
+function parseModelJson(text) {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start === -1 || end <= start) throw new Error("The idea model did not return a plan. Try again.");
+  if (start === -1 || end <= start) throw new Error("The model did not return a plan. Try again.");
   try {
     return JSON.parse(text.slice(start, end + 1));
   } catch {
-    throw new Error("The idea model returned a plan that could not be read. Try again.");
+    throw new Error("The model returned a plan that could not be read. Try again.");
   }
 }
 
@@ -223,44 +223,109 @@ function searchSources(candidate) {
   return [...sources.values()].slice(0, 10);
 }
 
-async function generateIdeas(body) {
-  if (!ideasConfigured) throw Object.assign(new Error("Set GEMINI_API_KEY in .env to turn on idea generation."), { statusCode: 503 });
-  const platform = String(body.platform || "Rednote").slice(0, 40);
-  const images = (Array.isArray(body.images) ? body.images : [])
+function imageParts(images) {
+  return (Array.isArray(images) ? images : [])
     .filter((image) => /^image\/(jpeg|png|webp|gif)$/.test(image?.mimeType) && image?.data)
-    .slice(0, 6);
-  const parts = images.flatMap((image, index) => [
-    { text: `Photo ${index + 1}${image.name ? ` (${String(image.name).slice(0, 80)})` : ""}:` },
-    { inlineData: { mimeType: image.mimeType, data: image.data } },
-  ]);
+    .slice(0, 6)
+    .flatMap((image, index) => [
+      { text: `Photo ${index + 1}${image.name ? ` (${String(image.name).slice(0, 80)})` : ""}:` },
+      { inlineData: { mimeType: image.mimeType, data: image.data } },
+    ]);
+}
+
+// Google Search grounding can't be combined with JSON mode, so grounded calls parse JSON out of the text.
+async function callGemini({ system, parts, search = false }) {
+  if (!ideasConfigured) throw Object.assign(new Error("Set GEMINI_API_KEY in .env to turn on idea generation."), { statusCode: 503 });
+  const generationConfig = { maxOutputTokens: 32000 };
+  if (!search) generationConfig.responseMimeType = "application/json";
+  const result = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ideasModel)}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts }],
+      ...(search ? { tools: [{ google_search: {} }] } : {}),
+      generationConfig,
+    }),
+  });
+  const payload = await result.json().catch(() => ({}));
+  if (!result.ok) throw new Error(payload.error?.message || `Gemini request failed with HTTP ${result.status}.`);
+  if (payload.promptFeedback?.blockReason) throw new Error("The model declined this request. Try rewording it.");
+  const candidate = payload.candidates?.[0];
+  if (["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION"].includes(candidate?.finishReason)) throw new Error("The model declined this request. Try rewording it.");
+  if (candidate?.finishReason === "MAX_TOKENS") throw new Error("The plan was cut off. Try a shorter brief or a shorter video.");
+  const text = (candidate?.content?.parts || []).filter((part) => part.text && !part.thought).map((part) => part.text).join("");
+  return { data: parseModelJson(text), candidate, model: payload.modelVersion || ideasModel };
+}
+
+async function generateIdeas(body) {
+  const platform = String(body.platform || "Rednote").slice(0, 40);
+  const parts = imageParts(body.images);
+  const photoCount = parts.length / 2;
   parts.push({
     text: [
       `Target platform: ${platform}`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}`,
       `Creator's brief: ${String(body.brief || "").trim().slice(0, 2000) || "(none given; infer the niche from the photos and script)"}`,
       `Current draft script: ${String(body.transcript || "").trim().slice(0, 1200) || "(none yet)"}`,
-      images.length ? `${images.length} photo(s) attached above.` : "No photos attached.",
+      photoCount ? `${photoCount} photo(s) attached above.` : "No photos attached.",
     ].join("\n"),
   });
+  const { data, candidate, model } = await callGemini({ system: IDEAS_SYSTEM, parts, search: true });
+  return { ...data, sources: searchSources(candidate), model };
+}
 
-  const result = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ideasModel)}:generateContent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: IDEAS_SYSTEM }] },
-      contents: [{ role: "user", parts }],
-      tools: [{ google_search: {} }],
-      generationConfig: { maxOutputTokens: 32000 },
-    }),
+const SCRIPT_SYSTEM = `You are the head writer and director inside Video Agent, a tool for short vertical social videos. The creator has an original idea. Turn it into a timed script and a detailed shooting screenplay.
+
+Follow the 3s + 5s principle strictly:
+- 0–3s is the hook. It must stop the scroll within 3 seconds: a bold claim, a question that hits a pain point, a surprising visual, a conflict, or the result shown first. No greetings, no brand introduction, no slow build.
+- After the hook, split the video into beats of at most 5 seconds each. Every beat must land a new point that re-arouses interest: a new fact or number, a contrast, a reveal, a demonstration, a pain point, an objection answered, social proof, or a curiosity gap that pays off later. No filler beats and no beat that repeats an earlier point.
+- The last beat ends with a clear call to action that suits the platform.
+- Times are whole seconds, continuous from 0 to the target length with no gaps. Spoken Mandarin runs about 4–5 characters per second, so each line must fit its time slot.
+- Keep lines speakable: at most about 4 Chinese characters per second of the slot (a 3s hook is at most 12 characters, a 5s beat at most 20), and the whole voiceover at most 4 characters per second of the target length.
+- Only state facts the creator gave in the idea or brief. When a beat needs a specific the creator did not give (a price, a discount, a warranty, a material, a location), write a placeholder in 【】 such as 【价格】 or 【保修年限】 for the creator to fill in, and never invent the number or claim.
+
+Presenter (avatar): the creator chooses "real_person" (someone films themselves on camera), "digital_human" (an AI presenter rendered by a digital-human tool), "none" (voiceover over footage and photos only) or "auto" (you choose what suits the idea and platform best, and say why). Describe the presenter precisely enough to cast or render: persona, look, wardrobe, setting, and delivery. For a digital human, describe it so it can be generated consistently in every shot.
+
+Screenplay: one or more shots per beat, no shot longer than 5 seconds, shot times covering 0 to the target length. For each shot give the shot size, the camera angle, the camera movement (static, push in, pull out, pan, tilt, tracking, handheld, orbit, etc.), what the presenter does (or "Off screen" when they are not visible), what is on screen, short on-screen text, the voiceover line, music or sound effects, the transition into the next shot, and the source: which attached photo to animate ("Photo 2 → AI motion"), "Film new", or "Digital human render".
+
+The script lines, on-screen text and voiceover are natural spoken Simplified Chinese (Mandarin). Everything else is in English. "motion" is an English camera direction for an image-to-video model for the opening shot: one small believable camera move that keeps the subject's design, proportions and colours unchanged.
+
+Reply with only a JSON object in exactly this shape:
+{
+  "title": "short name",
+  "logline": "one sentence on what the video does",
+  "durationSeconds": 30,
+  "avatar": {"type": "real_person | digital_human | none", "why": "why this presenter suits the idea", "persona": "who they are on screen", "look": "age range, appearance", "wardrobe": "...", "setting": "...", "delivery": "tone, pace, expressions, gestures"},
+  "hook": {"start": 0, "end": 3, "technique": "e.g. result first", "line": "Chinese", "visual": "what the viewer sees, English"},
+  "beats": [{"start": 3, "end": 8, "point": "the new point that keeps attention, English", "technique": "e.g. number, contrast, reveal", "line": "Chinese"}],
+  "screenplay": [{"shot": 1, "start": 0, "end": 3, "beat": "hook or beat number", "shotSize": "...", "angle": "...", "camera": "...", "presenter": "...", "visual": "...", "onScreenText": "Chinese", "voiceover": "Chinese", "audio": "...", "transition": "...", "source": "..."}],
+  "motion": "English camera direction for the opening shot",
+  "prep": ["what to film, render or prepare before production"]
+}`;
+
+async function generateScript(body) {
+  const idea = String(body.idea || "").trim().slice(0, 4000);
+  if (!idea) throw Object.assign(new Error("Write or choose an original idea first."), { statusCode: 400 });
+  const durationSeconds = [15, 30, 45, 60].includes(Number(body.durationSeconds)) ? Number(body.durationSeconds) : 30;
+  const avatar = ["real_person", "digital_human", "none", "auto"].includes(body.avatar) ? body.avatar : "auto";
+  const parts = imageParts(body.images);
+  const photoCount = parts.length / 2;
+  parts.push({
+    text: [
+      `Target platform: ${String(body.platform || "Rednote").slice(0, 40)}`,
+      `Target length: ${durationSeconds} seconds`,
+      `Presenter choice: ${avatar}`,
+      `Creator's brief: ${String(body.brief || "").trim().slice(0, 2000) || "(none)"}`,
+      photoCount ? `${photoCount} photo(s) attached above; refer to them as Photo 1, Photo 2, ...` : "No photos attached.",
+      "",
+      "Original idea:",
+      idea,
+    ].join("\n"),
   });
-  const payload = await result.json().catch(() => ({}));
-  if (!result.ok) throw new Error(payload.error?.message || `Gemini request failed with HTTP ${result.status}.`);
-  if (payload.promptFeedback?.blockReason) throw new Error("The idea model declined this request. Try rewording the brief.");
-  const candidate = payload.candidates?.[0];
-  if (["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION"].includes(candidate?.finishReason)) throw new Error("The idea model declined this request. Try rewording the brief.");
-  if (candidate?.finishReason === "MAX_TOKENS") throw new Error("The idea plan was cut off. Try a shorter brief.");
-  const text = (candidate?.content?.parts || []).filter((part) => part.text && !part.thought).map((part) => part.text).join("");
-  return { ...parseIdeasJson(text), sources: searchSources(candidate), model: payload.modelVersion || ideasModel };
+  const { data, model } = await callGemini({ system: SCRIPT_SYSTEM, parts });
+  const lines = [data.hook?.line, ...(Array.isArray(data.beats) ? data.beats.map((beat) => beat.line) : [])];
+  return { ...data, durationSeconds: Number(data.durationSeconds) || durationSeconds, voiceover: lines.filter(Boolean).join(""), model };
 }
 
 function runFfmpeg(args) {
@@ -359,6 +424,11 @@ async function handleApi(request, response, pathname) {
   if (pathname === "/api/ideas" && request.method === "POST") {
     const body = await readJson(request, 40 * 1024 * 1024);
     return sendJson(response, 200, await generateIdeas(body));
+  }
+
+  if (pathname === "/api/script" && request.method === "POST") {
+    const body = await readJson(request, 40 * 1024 * 1024);
+    return sendJson(response, 200, await generateScript(body));
   }
 
   if (pathname === "/api/tts" && request.method === "POST") {

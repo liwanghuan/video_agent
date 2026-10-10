@@ -78,10 +78,29 @@
               <div class="panel-divider"></div>
               <div class="panel-bottom-row"><button class="secondary-button" id="skipIdeas">Skip to voiceover</button><button class="primary-button" id="generateIdeas"><span class="sparkle">✳</span> Get ideas <span class="button-arrow">→</span></button></div>
               <div class="inline-feedback" id="ideasFeedback" role="status" hidden></div>
+              <button class="text-button own-idea" id="ownIdea" type="button">I already have an idea — write the script <span>→</span></button>
             </div>
             <div class="ideas-results" id="ideasResults" aria-live="polite">
               <div class="ideas-empty" id="ideasEmpty"><span class="preview-play-icon">✳</span><strong>Your ideas will appear here</strong><span>A review of your materials, accounts doing well on the platform right now, and three ready-to-record scripts.</span></div>
             </div>
+            <section class="develop-panel" id="developPanel" hidden>
+              <div class="ideas-input">
+                <div class="panel-heading"><div><span class="panel-index">STEP 1 / ORIGINAL IDEA</span><h2>Shape your idea</h2></div></div>
+                <p class="panel-description">Start from an idea above, or write your own. Change anything: the concept, the angle, the draft lines, the shots you have.</p>
+                <label class="field-label" for="originalIdea">Original idea</label>
+                <textarea class="prompt-field" id="originalIdea" rows="11" placeholder="e.g. Show that factory-direct sofas cost less than the mall, then prove the delivery and installation are handled for you. Open on the finished living room."></textarea>
+                <div class="prompt-options develop-options">
+                  <label>Length<select id="scriptLength"><option value="15">15 sec</option><option value="30" selected>30 sec</option><option value="45">45 sec</option><option value="60">60 sec</option></select></label>
+                  <label>Presenter<select id="avatarChoice"><option value="auto">Let the agent choose</option><option value="real_person">Real person</option><option value="digital_human">Digital human</option><option value="none">No presenter (voiceover)</option></select></label>
+                </div>
+                <div class="panel-divider"></div>
+                <div class="panel-bottom-row"><span class="develop-rule"><strong>3s</strong> hook · a new point every <strong>5s</strong></span><button class="primary-button" id="generateScript"><span class="sparkle">✳</span> Write script <span class="button-arrow">→</span></button></div>
+                <div class="inline-feedback" id="scriptFeedback" role="status" hidden></div>
+              </div>
+              <div class="ideas-results" id="scriptResults" aria-live="polite">
+                <div class="ideas-empty"><span class="preview-play-icon">✳</span><strong>STEP 2 / SCRIPT &amp; SCREENPLAY</strong><span>A timed script that hooks in the first 3 seconds and lands a new point every 5 seconds, and a shot-by-shot screenplay with the presenter, camera moves, on-screen text and sound.</span></div>
+              </div>
+            </section>
           </section>
 
           <div class="studio-grid">
