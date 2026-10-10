@@ -67,7 +67,7 @@ The ideas stage contains two substeps: an original idea (creator-editable) and t
 
 ### Node.js application server
 
-`server.js` uses Node's built-in HTTP, filesystem, and process APIs; there is no frontend bundler or npm dependency tree. It serves static files, routes `/api/*`, calls providers, and launches FFmpeg for export. `.env` is read for local development; Cloud Run values are injected as environment variables.
+`server.js` uses Node's built-in HTTP, filesystem, and process APIs; there is no frontend bundler or npm dependency tree. It serves static files, routes `/api/*`, calls providers, and launches FFmpeg for export. `.env` is read for local development; Cloud Run values are injected as environment variables. A separate Python service in `adk_service/` provides the initial ADK multi-agent planning workflow.
 
 The Docker image is defined by `Dockerfile`: Node 22 Debian slim, FFmpeg and CA certificates, static app files and sample assets, then `node server.js`. The server listens on the injected `PORT` and binds to `0.0.0.0` in Cloud Run.
 
@@ -77,9 +77,10 @@ All API endpoints are same-origin JSON requests unless noted. Errors are returne
 
 | Route | Input (summary) | Output | Provider / behavior |
 |---|---|---|---|
-| `GET /api/health` | None | `{ qwen, vertex, ideas, demo, model, location }` | Configuration presence only; not a full provider readiness test. |
+| `GET /api/health` | None | `{ qwen, vertex, ideas, adk, demo, model, location }` | Configuration presence only; not a full provider readiness test. |
 | `POST /api/ideas` | `brief`, `platform`, `transcript`, `images[]` (`name`, `mimeType`, base64 `data`) | `materials`, `trends`, `ideas`, grounded `sources`, `model` | Gemini; Google Search grounding enabled. Images are filtered to supported types and capped at six. |
 | `POST /api/script` | `idea`, `brief`, `platform`, `durationSeconds`, `avatar`, `images[]` | Timed `hook`, `beats`, `screenplay[]`, `avatar`, `motion`, `prep`, composed `voiceover`, `model` | Gemini JSON response; duration restricted to 15/30/45/60 seconds and presenter to known enum values. |
+| `POST /api/production-plan` | `projectId`, `baseProjectVersion`, selected `idea`, `brief`, confirmed `facts[]`, platform/language/duration, `frameAssets[]`, voice profile ID | Proposal with `proposalId`, `inputHash`, `scriptPlan`, `scenePlan`, warnings, and `approvalRequired: true` | Proxies to private ADK planner configured by `ADK_PLANNER_URL`; requires an even duration from 4–60 seconds. Synchronous planning only; does not persist proposals or enqueue media jobs. |
 | `POST /api/tts` | `text`, optional `voice` | `audio/mpeg` bytes | Proxies to `QWEN_TTS_ENDPOINT`; upstream may return MP3 bytes or JSON containing base64 audio. |
 | `POST /api/video` | `prompt`, `transcript`, `firstFrame`, optional `lastFrame`, `durationSeconds`, `aspectRatio`, `resolution` | `video/mp4` bytes | Starts Veo `predictLongRunning`, polls operation, downloads result from GCS when needed. Veo audio is disabled. |
 | `POST /api/export` | base64 `videoBase64`, `audioBase64`, `transcript`, `subtitles`, `loopVideo` | Downloadable MP4 bytes | Writes temporary files, runs FFmpeg to encode H.264/AAC and optional `mov_text` subtitle track, then removes temp directory. |
@@ -98,6 +99,8 @@ All API endpoints are same-origin JSON requests unless noted. Errors are returne
 ### Gemini
 
 Gemini is used for idea research and script/screenplay generation. `GEMINI_API_KEY` gates both features; `IDEAS_MODEL_ID` selects the model (default in code: `gemini-3.8-flash`). The app calls the Generative Language API from the server. Idea research enables Google Search grounding; script generation requests JSON without grounding. Do not send this key to the browser.
+
+The production-plan path uses ADK with Vertex AI Gemini in `adk_service/`, currently running Transcript Planner → Scene Planner → Plan Reviewer. It defaults to `gemini-3.7-flash` (override with `ADK_MODEL_ID`) and uses its Cloud Run service identity rather than `GEMINI_API_KEY`. When configured, the Ideas screen exposes a plan-only action and can copy the proposed transcript plus first scene prompt into the existing single-scene workflow; segment generation, approval persistence, and job execution are not yet integrated.
 
 ### Qwen3-TTS
 
@@ -119,6 +122,7 @@ See [`.env.example`](.env.example) for local configuration and [`DEPLOY_GCLOUD.m
 | `IDEAS_MODEL_ID` | Optional Gemini model override. |
 | `QWEN_TTS_ENDPOINT` | External Qwen HTTP API URL. |
 | `QWEN_TTS_TOKEN` | Optional Qwen bearer token; use Secret Manager in Cloud Run. |
+| `ADK_PLANNER_URL` | Optional private ADK planner URL; the Node API obtains a Cloud Run identity token when deployed on Cloud Run. |
 | `GOOGLE_CLOUD_PROJECT` | GCP project for Vertex. |
 | `VERTEX_LOCATION` | Vertex endpoint region. |
 | `VERTEX_MODEL_ID` | Veo model ID. |
@@ -134,7 +138,7 @@ These are important current boundaries, not assumptions to build on:
 - **No application database:** project names/sidebar entries are static examples. There is no account system, shared workspace, server-side project record, or saved generation history.
 - **Browser-local drafts only:** `localStorage` is per-browser/device and not a backup or collaboration mechanism.
 - **Ephemeral generated media:** generated buffers are transferred directly; browser object URLs are temporary. GCS is used as Veo staging only.
-- **No durable job model:** Gemini/Veo calls are synchronous from the UI perspective. Veo is polled inside one server request; there is no queue, job ID, retry workflow, or resumable progress state.
+- **No durable job model:** existing Gemini/Veo calls are synchronous from the UI perspective. Veo is polled inside one server request; there is no queue, job ID, retry workflow, or resumable progress state. ADK planning is also synchronous and its one-invocation session is in memory.
 - **Request memory and size:** JSON/base64 image and media payloads can be large. `readJson` has a global limit (120 MiB), with lower per-route limits for planning/TTS. Large media and concurrent FFmpeg exports can consume substantial memory.
 - **Authentication is deployment-level:** this code does not implement app user login or per-user authorization. Keep the Cloud Run service behind a suitable authenticated access layer; do not expose paid model endpoints without abuse controls.
 - **Provider flags are configuration checks:** `/api/health` does not make test calls to confirm readiness.
@@ -178,6 +182,7 @@ Recommended evolution paths; none are implemented unless noted above:
 | `styles.css` | Visual design, responsive layout, component states. |
 | `app.js` | Browser state, stage flow, provider requests, result rendering, local draft, downloads. |
 | `server.js` | Static HTTP server, API handlers, Gemini/Qwen/Vertex integration, FFmpeg pipeline. |
+| `adk_service/` | Python ADK planning workflow and private Cloud Run service container. |
 | `Dockerfile` | Cloud Run runtime image; installs FFmpeg and copies app/sample assets. |
 | `.env.example` | Local/runtime configuration template. |
 | `DEPLOY_GCLOUD.md` | Step-by-step Google Cloud deployment notes. |

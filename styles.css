@@ -76,3 +76,60 @@
 .shot-card .beat-line{margin:5px 0 7px}
 @media(max-width:820px){.develop-panel{grid-template-columns:minmax(0,1fr)}.ideas-panel{grid-template-columns:minmax(0,1fr);max-width:640px;margin-left:auto;margin-right:auto}}
 @media(max-width:560px){.develop-options{grid-template-columns:1fr}.ideas-panel{margin-top:16px}.ideas-input,.ideas-results{padding:16px}.ideas-results{min-height:0}.ideas-empty{min-height:220px}}
+.adk-plan-row {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line, #e8e5df);
+  align-items: end;
+}
+
+.adk-plan-row[hidden] {
+  display: none;
+}
+
+.adk-plan-row .field-label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted, #77736d);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.adk-plan-row select {
+  min-width: 112px;
+}
+
+.production-results[hidden] {
+  display: none;
+}
+
+.production-results {
+  grid-column: 2;
+}
+
+.production-scene-card {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line, #e8e5df);
+}
+
+.production-scene-card h4 {
+  margin: 0 0 7px;
+}
+
+.production-scene-card p,
+.production-plan-note,
+.production-transcript-line {
+  line-height: 1.55;
+}
+
+.production-scene-transcript {
+  color: var(--muted, #77736d);
+  font-size: 13px;
+}
+
+.production-warning-list {
+  color: #8f4c28;
+}
+
+@media(max-width:820px){.production-results{grid-column:1}}

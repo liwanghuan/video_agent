@@ -14,6 +14,7 @@ Copy `.env.example` to `.env` and set:
 
 - `GEMINI_API_KEY`: turns on step 00, Ideas. `IDEAS_MODEL_ID` can override the default `gemini-3.8-flash`.
 - `QWEN_TTS_ENDPOINT`: an endpoint that accepts `{ "text", "voice", "format" }` and returns MP3 bytes or `{ "audioBase64": "..." }`.
+- `ADK_PLANNER_URL`: optional private ADK planning service URL. Its Cloud Run deployment and local setup are in [`DEPLOY_GCLOUD.md`](DEPLOY_GCLOUD.md).
 - `GOOGLE_CLOUD_PROJECT` and `VERTEX_OUTPUT_URI`: a project with Vertex AI and a writable Cloud Storage output prefix.
 - `VERTEX_LOCATION` and `VERTEX_MODEL_ID` can override the defaults.
 
@@ -25,7 +26,11 @@ gcloud auth application-default login
 
 The Qwen endpoint is a separate model service. The UI does not put Google or Qwen credentials in the browser. The server calls Qwen first, sends the transcript with the chosen visual direction and frame(s) to Veo, then muxes the generated scene and narration into an MP4 with FFmpeg.
 
+When `ADK_PLANNER_URL` is configured, the Ideas screen also offers a multi-agent full-video planning action. The ADK service sequentially proposes timed transcript blocks, Veo scene prompts, and review warnings; the UI can display the proposal and copy its transcript into the existing workflow. This first slice does not yet persist the proposal or run per-segment Qwen/Veo jobs; those remain follow-on implementation work.
+
 ## Deploy the UI and Vertex proxy to Cloud Run
+
+For the separate private ADK planner deployment, inter-service IAM, and configuration, follow [`DEPLOY_GCLOUD.md`](DEPLOY_GCLOUD.md). The main studio service account needs `roles/run.invoker` on the planner service.
 
 Create a writable bucket and configure a Cloud Run service account with Vertex AI User and Storage Object User permissions for the generated output bucket. The Qwen endpoint must also be reachable from the service. If it requires Cloud Run IAM, grant the studio service account permission to invoke that service. Set `PROJECT_ID`, `BUCKET`, and `REGION` for the shell before running:
 

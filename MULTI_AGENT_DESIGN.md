@@ -1,6 +1,6 @@
 # Multi-Agent Production Workflow — Design Proposal
 
-Status: proposal for implementation planning. This document describes a target design, not features already present in the application. The current implementation baseline is summarized in [`PROJECT_ARCHITECTURE.md`](PROJECT_ARCHITECTURE.md).
+Status: target design with an initial ADK planning slice implemented. The current boundary is recorded in [`PROJECT_ARCHITECTURE.md`](PROJECT_ARCHITECTURE.md); durable projects/jobs, Qwen/Veo fan-out workers, segment editing, and final multi-scene assembly remain planned work.
 
 ## 1. Goal
 

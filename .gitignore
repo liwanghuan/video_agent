@@ -25,6 +25,9 @@ replay_pid*
 
 .DS_Store
 node_modules/
+.venv/
+__pycache__/
+*.py[cod]
 .env
 /f30881792_ftyp.mov
 /f30977280.mp4

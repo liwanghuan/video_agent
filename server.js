@@ -24,6 +24,7 @@ const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT |
 const location = process.env.VERTEX_LOCATION || "us-central1";
 const model = process.env.VERTEX_MODEL_ID || "veo-3.1-fast-generate-001";
 const qwenEndpoint = process.env.QWEN_TTS_ENDPOINT || "";
+const adkPlannerUrl = (process.env.ADK_PLANNER_URL || "").replace(/\/$/, "");
 const outputUri = process.env.VERTEX_OUTPUT_URI || "";
 const ideasModel = process.env.IDEAS_MODEL_ID || "gemini-3.8-flash";
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
@@ -78,23 +79,68 @@ async function accessToken() {
   }
 }
 
-async function qwenAuthorization() {
-  if (process.env.QWEN_TTS_TOKEN) return `Bearer ${process.env.QWEN_TTS_TOKEN}`;
+async function serviceAuthorization(endpoint) {
   if (process.env.K_SERVICE) {
-    const audience = new URL(qwenEndpoint).origin;
+    const audience = new URL(endpoint).origin;
     const identityUrl = new URL("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity");
     identityUrl.searchParams.set("audience", audience);
     identityUrl.searchParams.set("format", "full");
     const response = await fetch(identityUrl, { headers: { "Metadata-Flavor": "Google" } });
-    if (!response.ok) throw new Error("Could not mint an identity token for the Qwen service.");
+    if (!response.ok) throw new Error("Could not mint an identity token for the downstream Cloud Run service.");
     return `Bearer ${(await response.text()).trim()}`;
   }
   try {
-    const audience = new URL(qwenEndpoint).origin;
+    const audience = new URL(endpoint).origin;
     const identityToken = execFileSync("gcloud", ["auth", "print-identity-token", `--audiences=${audience}`], { encoding: "utf8", timeout: 15000 }).trim();
     return `Bearer ${identityToken}`;
   } catch {
     return "";
+  }
+}
+
+async function qwenAuthorization() {
+  if (process.env.QWEN_TTS_TOKEN) return `Bearer ${process.env.QWEN_TTS_TOKEN}`;
+  return serviceAuthorization(qwenEndpoint);
+}
+
+async function generateProductionPlan(body) {
+  if (!adkPlannerUrl) throw Object.assign(new Error("Set ADK_PLANNER_URL to the authenticated ADK planning service."), { statusCode: 503 });
+  const idea = String(body.idea || "").trim();
+  const projectId = String(body.projectId || "").trim();
+  if (!idea || !projectId) throw Object.assign(new Error("projectId and a selected idea are required."), { statusCode: 400 });
+  const durationSeconds = Number(body.durationSeconds || 40);
+  if (!Number.isInteger(durationSeconds) || durationSeconds < 4 || durationSeconds > 60 || durationSeconds % 2 !== 0) {
+    throw Object.assign(new Error("Production plans currently require an even duration from 4 to 60 seconds so Veo scenes can cover the timeline."), { statusCode: 400 });
+  }
+  const token = await serviceAuthorization(adkPlannerUrl);
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 210000);
+  try {
+    const upstream = await fetch(`${adkPlannerUrl}/v1/production-plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}) },
+      body: JSON.stringify({
+        projectId,
+        baseProjectVersion: Number.isInteger(body.baseProjectVersion) ? body.baseProjectVersion : 1,
+        idea: idea.slice(0, 4000),
+        brief: String(body.brief || "").slice(0, 4000),
+        facts: Array.isArray(body.facts) ? body.facts.slice(0, 40).map((item) => String(item).slice(0, 500)) : [],
+        platform: String(body.platform || "rednote").slice(0, 40),
+        language: String(body.language || "zh-CN").slice(0, 20),
+        durationSeconds,
+        frameAssets: Array.isArray(body.frameAssets) ? body.frameAssets.slice(0, 24) : [],
+        voiceProfileId: String(body.voiceProfileId || "default").slice(0, 100),
+      }),
+      signal: abort.signal,
+    });
+    const result = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) throw Object.assign(new Error(result.error || result.detail || `ADK planning service returned HTTP ${upstream.status}.`), { statusCode: upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502 });
+    return result;
+  } catch (error) {
+    if (error.name === "AbortError") throw Object.assign(new Error("ADK planning timed out. Retry the plan request."), { statusCode: 504 });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -413,6 +459,7 @@ async function handleApi(request, response, pathname) {
   if (pathname === "/api/health" && request.method === "GET") {
     return sendJson(response, 200, {
       qwen: Boolean(qwenEndpoint),
+      adk: Boolean(adkPlannerUrl),
       vertex: Boolean(project && outputUri.startsWith("gs://")),
       ideas: ideasConfigured,
       demo: !(qwenEndpoint && project && outputUri.startsWith("gs://")),
@@ -429,6 +476,11 @@ async function handleApi(request, response, pathname) {
   if (pathname === "/api/script" && request.method === "POST") {
     const body = await readJson(request, 40 * 1024 * 1024);
     return sendJson(response, 200, await generateScript(body));
+  }
+
+  if (pathname === "/api/production-plan" && request.method === "POST") {
+    const body = await readJson(request, 2 * 1024 * 1024);
+    return sendJson(response, 200, await generateProductionPlan(body));
   }
 
   if (pathname === "/api/tts" && request.method === "POST") {

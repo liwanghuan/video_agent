@@ -95,11 +95,16 @@
                 </div>
                 <div class="panel-divider"></div>
                 <div class="panel-bottom-row"><span class="develop-rule"><strong>3s</strong> hook · a new point every <strong>5s</strong></span><button class="primary-button" id="generateScript"><span class="sparkle">✳</span> Write script <span class="button-arrow">→</span></button></div>
+                <div class="panel-bottom-row adk-plan-row" id="adkPlanRow" hidden>
+                  <label class="field-label" for="productionLength">Full video plan<select id="productionLength"><option value="20">20 sec</option><option value="30">30 sec</option><option value="40" selected>40 sec</option><option value="50">50 sec</option><option value="60">60 sec</option></select></label>
+                  <button class="secondary-button" id="generateProductionPlan" type="button">Plan transcript + scenes with ADK</button>
+                </div>
                 <div class="inline-feedback" id="scriptFeedback" role="status" hidden></div>
               </div>
               <div class="ideas-results" id="scriptResults" aria-live="polite">
                 <div class="ideas-empty"><span class="preview-play-icon">✳</span><strong>STEP 2 / SCRIPT &amp; SCREENPLAY</strong><span>A timed script that hooks in the first 3 seconds and lands a new point every 5 seconds, and a shot-by-shot screenplay with the presenter, camera moves, on-screen text and sound.</span></div>
               </div>
+              <div class="ideas-results production-results" id="productionResults" aria-live="polite" hidden></div>
             </section>
           </section>
 

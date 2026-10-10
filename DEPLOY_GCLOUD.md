@@ -93,7 +93,67 @@ export QWEN_URL="$(gcloud run services describe framehouse-qwen \
 
 Use the canonical Cloud Run service URL for `QWEN_TTS_ENDPOINT`. Framehouse automatically obtains an identity token for this private service. For another host, use its HTTPS endpoint and protect it with an API token; don't expose a paid inference endpoint anonymously.
 
-## 3. Build and deploy Framehouse
+## 3. Deploy the ADK production-planning service
+
+The separate Python service runs three ADK roles in order: Transcript Planner, Scene Planner, and Plan Reviewer. It returns a versioned proposal only; it does not start Qwen or Veo jobs, save project state, or bypass the user's approval. Framehouse calls it through authenticated Cloud Run service-to-service access. The planner uses Vertex AI Gemini through its Cloud Run service identity; no Gemini API key is needed for this service.
+
+Create a least-privilege runtime identity and grant Vertex AI access:
+
+```bash
+export ADK_SERVICE="framehouse-adk-planner"
+export ADK_SA="framehouse-adk-runtime"
+gcloud iam service-accounts create "$ADK_SA" \
+  --display-name="Framehouse ADK planner runtime"
+export ADK_SA_EMAIL="${ADK_SA}@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${ADK_SA_EMAIL}" --role="roles/aiplatform.user"
+```
+
+Build and deploy from the repository root:
+
+```bash
+export ADK_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/framehouse/adk-planner:latest"
+gcloud builds submit --tag "$ADK_IMAGE" ./adk_service
+gcloud run deploy "$ADK_SERVICE" \
+  --image "$ADK_IMAGE" --region "$REGION" \
+  --service-account "$ADK_SA_EMAIL" \
+  --cpu 2 --memory 2Gi --concurrency 4 --timeout 240 \
+  --no-allow-unauthenticated \
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,ADK_MODEL_ID=gemini-3.7-flash"
+```
+
+Allow only the Framehouse API runtime identity to invoke the planner, then configure the web service:
+
+```bash
+gcloud run services add-iam-policy-binding "$ADK_SERVICE" \
+  --region "$REGION" \
+  --member="serviceAccount:${RUN_SA_EMAIL}" --role="roles/run.invoker"
+export ADK_URL="$(gcloud run services describe "$ADK_SERVICE" \
+  --region "$REGION" --format='value(status.url)')"
+gcloud run services update "$RUN_SERVICE" --region "$REGION" \
+  --update-env-vars="ADK_PLANNER_URL=${ADK_URL}"
+```
+
+The web API obtains a Cloud Run identity token for the planner's canonical service URL. Do not make the planner public. For local development, run the ADK service separately and set `ADK_PLANNER_URL=http://127.0.0.1:8081`; local auth is optional when the planner is on localhost.
+
+The new `POST /api/production-plan` endpoint accepts a selected idea, confirmed facts, duration, and frame asset IDs/descriptions, and returns a plan proposal with `proposalId`, `baseProjectVersion`, and `inputHash`. It currently requires an even duration from 4–60 seconds so 4/6/8-second Veo clips can exactly cover the full timeline. This endpoint is synchronous planning, not the durable media-generation workflow. Do not treat an in-memory ADK session as saved project/job state.
+
+Local planner setup:
+
+```bash
+cd adk_service
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+export GOOGLE_GENAI_USE_VERTEXAI=TRUE
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export GOOGLE_CLOUD_LOCATION="global"
+uvicorn main:app --host 0.0.0.0 --port 8081
+```
+
+Then set `ADK_PLANNER_URL=http://127.0.0.1:8081` in the Framehouse `.env`. Authenticate locally with `gcloud auth application-default login`.
+
+## 4. Build and deploy Framehouse
 
 From this repository directory, build the image and deploy the web app/API:
 
@@ -120,21 +180,9 @@ The app currently has no built-in user login. Deployment above keeps Cloud Run p
 
 ### Keep large video assets out of the build upload
 
-The current `Dockerfile` copies `f30977280.mp4` even though the demo player uses `edge_samples/demo_listing_reel.mp4`. The unused file is about 46 MB. Before `gcloud builds submit`, change this Dockerfile line:
+The current `Dockerfile` copies `f30881536.jpg` and `edge_samples/`, not the large `f30977280.mp4` file. Keep generated media out of the image build context and use Cloud Storage for production assets.
 
-```dockerfile
-COPY f30881536.jpg f30977280.mp4 ./
-```
-
-to:
-
-```dockerfile
-COPY f30881536.jpg ./
-```
-
-Do not exclude `f30977280.mp4` via `.gcloudignore` while the Dockerfile still copies it, or the image build will fail. The repository's `.gitignore` excludes this large file from Git already.
-
-## 4. Verify
+## 5. Verify
 
 Get the URL and check service health:
 
@@ -163,6 +211,9 @@ gcloud run services logs read framehouse-qwen --region "$REGION" --limit 100
 ## Official references
 
 - [Deploy containers to Cloud Run](https://docs.cloud.google.com/run/docs/deploying)
+- [Deploy ADK agents to Cloud Run](https://google.github.io/adk-docs/deploy/cloud-run/)
+- [ADK Python runner and session behavior](https://github.com/google/adk-python/blob/main/docs/guides/runners/runner/index.md)
+- [Gemini 3.7 Flash on Google Cloud](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-7-flash)
 - [Cloud Run service identity](https://docs.cloud.google.com/run/docs/configuring/services/service-identity)
 - [Cloud Run GPU services](https://docs.cloud.google.com/run/docs/configuring/services/gpu)
 - [Cloud Run secrets](https://docs.cloud.google.com/run/docs/configuring/services/secrets)

@@ -9,7 +9,7 @@ if (savedDraft?.ideaBrief) $("#ideaBrief").value = savedDraft.ideaBrief;
 if (savedDraft?.originalIdea) $("#originalIdea").value = savedDraft.originalIdea;
 
 const state = {
-  api: { qwen: false, vertex: false, ideas: false, demo: true },
+  api: { qwen: false, vertex: false, ideas: false, adk: false, demo: true },
   audioBlob: null,
   audioUrl: null,
   audioReady: false,
@@ -23,6 +23,7 @@ const state = {
   scriptPlan: savedDraft?.scriptPlan || null,
   originalScript: $("#transcript").value.trim(),
   isDemoVideo: true,
+  projectId: savedDraft?.projectId || `project_${globalThis.crypto?.randomUUID?.() || Date.now()}`,
 };
 
 const transcript = $("#transcript");
@@ -78,6 +79,7 @@ function saveDraft() {
     ideaBrief: $("#ideaBrief").value,
     originalIdea: $("#originalIdea").value,
     scriptPlan: state.scriptPlan,
+    projectId: state.projectId,
     voice: state.selectedVoice,
     aspectRatio: $("#aspectRatio").value,
     duration: $("#sceneDuration").value,
@@ -124,6 +126,7 @@ async function refreshApiStatus() {
     $$(".status-demo")[1].textContent = live ? "CONNECTED" : "NOT CONNECTED";
     $$(".status-demo")[1].classList.toggle("status-live", live);
     $("#ideasConnection").innerHTML = state.api.ideas ? '<i style="background:#89ad51"></i> GEMINI CONNECTED' : '<i></i> NOT CONNECTED';
+    $("#adkPlanRow").hidden = !state.api.adk;
     $(".demo-tag").innerHTML = `<i></i> ${state.api.qwen || live ? "Connected workspace" : "Demo project"}`;
   } catch {
     // The static UI remains usable as a sample workspace when no local server is running.
@@ -134,7 +137,7 @@ async function apiError(response) {
   let message = `Request failed (${response.status})`;
   try {
     const payload = await response.json();
-    message = payload.error || payload.message || message;
+    message = payload.error || payload.message || payload.detail || message;
   } catch {
     // Use the HTTP status when the server did not return JSON.
   }
@@ -484,6 +487,98 @@ function renderScript(plan) {
     }
     if (plan.motion) prep.append(element("p", "", `Opening motion for Veo: ${plan.motion}`));
     results.append(prep);
+  }
+}
+
+function renderProductionPlan(proposal) {
+  const root = $("#productionResults");
+  root.replaceChildren();
+  root.hidden = false;
+  const scriptPlan = proposal.scriptPlan || {};
+  const transcriptBlocks = scriptPlan.transcriptBlocks || [];
+  const header = element("section", "ideas-section");
+  header.append(
+    element("span", "panel-index", `ADK PROPOSAL · ${scriptPlan.durationSeconds || Number($("#productionLength").value)}s · ${proposal.proposalId || "draft"}`),
+    element("h3", "", scriptPlan.title || "Production plan"),
+  );
+  if (scriptPlan.logline) header.append(element("p", "", scriptPlan.logline));
+  const transcriptSection = element("section", "ideas-section");
+  transcriptSection.append(element("span", "panel-index", "TIMED TRANSCRIPT"));
+  transcriptBlocks.forEach((block) => {
+    const row = element("p", "production-transcript-line", `${(Number(block.startMs) / 1000).toFixed(1)}–${(Number(block.endMs) / 1000).toFixed(1)}s  ${block.text || ""}`);
+    transcriptSection.append(row);
+  });
+  const sceneSection = element("section", "ideas-section");
+  sceneSection.append(element("span", "panel-index", `SCENE PLAN · ${(proposal.scenePlan?.segments || []).length} SEGMENTS`));
+  (proposal.scenePlan?.segments || []).forEach((segment) => {
+    const card = element("article", "production-scene-card");
+    card.append(element("h4", "", `Scene ${Number(segment.index) + 1} · ${(Number(segment.startMs) / 1000).toFixed(0)}–${(Number(segment.endMs) / 1000).toFixed(0)}s`));
+    card.append(element("p", "", segment.prompt || ""));
+    const transcript = transcriptBlocks.filter((block) => (segment.transcriptBlockIds || []).includes(block.id)).map((block) => block.text).join(" ");
+    if (transcript) card.append(element("p", "production-scene-transcript", transcript));
+    sceneSection.append(card);
+  });
+  const warningList = proposal.warnings || [];
+  if (warningList.length) {
+    const warnings = element("ul", "production-warning-list");
+    warningList.forEach((warning) => warnings.append(element("li", "", String(warning))));
+    sceneSection.append(warnings);
+  }
+  const note = element("p", "production-plan-note", "This is a reviewed proposal, not a saved project or generated media. Confirm the plan before starting audio/video generation.");
+  const use = element("button", "primary-button", "Use transcript in voiceover step →");
+  use.type = "button";
+  use.addEventListener("click", () => {
+    transcript.value = transcriptBlocks.map((block) => block.text).join("");
+    if (proposal.scenePlan?.segments?.[0]?.prompt) $("#videoPrompt").value = proposal.scenePlan.segments[0].prompt;
+    updateTranscript();
+    setStep("audio");
+    transcript.focus();
+  });
+  const actions = element("div", "idea-actions");
+  actions.append(use);
+  header.append(note, actions);
+  root.append(header, transcriptSection, sceneSection);
+}
+
+async function generateProductionPlan() {
+  const button = $("#generateProductionPlan");
+  clearFeedback("#scriptFeedback");
+  const idea = $("#originalIdea").value.trim();
+  if (!idea) {
+    feedback("#scriptFeedback", "Write or select an idea before planning the full video.", "error");
+    $("#originalIdea").focus();
+    return;
+  }
+  setBusy(button, true, "Planning transcript + scenes…");
+  try {
+    const frames = state.ideaImages.map((image, index) => ({
+      assetId: `upload_${index + 1}`,
+      description: image.name || `Creator photo ${index + 1}`,
+    }));
+    if (!frames.length) frames.push({ assetId: "demo_opening_frame", description: "Bundled listing demonstration photo" });
+    const response = await fetch("/api/production-plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: state.projectId,
+        baseProjectVersion: 1,
+        idea,
+        brief: $("#ideaBrief").value.trim(),
+        facts: [],
+        platform: $("#ideaPlatform").value,
+        language: "zh-CN",
+        durationSeconds: Number($("#productionLength").value),
+        frameAssets: frames,
+        voiceProfileId: state.selectedVoice,
+      }),
+    });
+    if (!response.ok) throw await apiError(response);
+    renderProductionPlan(await response.json());
+    feedback("#scriptFeedback", "ADK proposal ready. Review the transcript, scene boundaries, and prompts before using it.");
+  } catch (error) {
+    feedback("#scriptFeedback", error.message, "error");
+  } finally {
+    setBusy(button, false);
   }
 }
 
@@ -872,6 +967,7 @@ $("#generateIdeas").addEventListener("click", generateIdeas);
 $("#skipIdeas").addEventListener("click", () => setStep("audio"));
 $("#ownIdea").addEventListener("click", () => openDevelop($("#originalIdea").value.trim() ? undefined : $("#ideaBrief").value.trim()));
 $("#generateScript").addEventListener("click", generateScript);
+$("#generateProductionPlan").addEventListener("click", generateProductionPlan);
 $("#originalIdea").addEventListener("input", () => { $("#saveLabel").textContent = "Unsaved changes"; });
 $("#ideaImagesInput").addEventListener("change", (event) => addIdeaImages(event.target.files));
 $("#ideaBrief").addEventListener("input", () => { $("#saveLabel").textContent = "Unsaved changes"; });
