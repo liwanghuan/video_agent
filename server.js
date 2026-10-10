@@ -420,6 +420,115 @@ function subtitleFileText(text, durationSeconds) {
   }).join("\n\n");
 }
 
+function shotSubtitleFileText(segments) {
+  const cues = [];
+  let timelineMs = 0;
+  let cueIndex = 1;
+  for (const segment of segments) {
+    const text = String(segment.transcript || "").replace(/[\r\n]+/g, "").trim();
+    const durationMs = Number(segment.durationSeconds) * 1000;
+    if (text) {
+      const chunks = [];
+      let chunk = "";
+      for (const char of [...text]) {
+        chunk += char;
+        if ((chunk.length >= 16 && /[，。！？；：,.!?;:]$/.test(chunk)) || chunk.length >= 21) {
+          chunks.push(chunk);
+          chunk = "";
+        }
+      }
+      if (chunk) chunks.push(chunk);
+      const weight = chunks.reduce((sum, item) => sum + [...item].length, 0) || chunks.length;
+      let localMs = 0;
+      chunks.forEach((item, index) => {
+        const startMs = timelineMs + localMs;
+        localMs += durationMs * ([...item].length / weight);
+        if (index === chunks.length - 1) localMs = durationMs;
+        cues.push(`${cueIndex++}\n${timestampSrt(startMs)} --> ${timestampSrt(timelineMs + localMs)}\n${item}`);
+      });
+    }
+    timelineMs += durationMs;
+  }
+  return cues.join("\n\n");
+}
+
+async function exportShotAssembly(body) {
+  const segments = body.segments;
+  if (!Array.isArray(segments) || !segments.length || segments.length > 15) {
+    throw Object.assign(new Error("Provide 1–15 completed shots to assemble."), { statusCode: 400 });
+  }
+  let plannedDuration = 0;
+  for (const [index, segment] of segments.entries()) {
+    const duration = Number(segment.durationSeconds);
+    if (![4, 6, 8].includes(duration) || typeof segment.videoBase64 !== "string" || !segment.videoBase64 || typeof segment.audioBase64 !== "string" || !segment.audioBase64) {
+      throw Object.assign(new Error(`Shot ${index + 1} is missing its MP4, MP3, or supported 4/6/8-second duration.`), { statusCode: 400 });
+    }
+    plannedDuration += duration;
+  }
+  if (plannedDuration > 120) throw Object.assign(new Error("The assembled video cannot exceed 120 seconds."), { statusCode: 400 });
+
+  const baseSize = body.resolution === "720p" ? 720 : 1080;
+  const width = body.aspectRatio === "16:9" ? Math.round(baseSize * 16 / 9) : baseSize;
+  const height = body.aspectRatio === "16:9" ? baseSize : Math.round(baseSize * 16 / 9);
+  const temp = await mkdtemp(path.join(os.tmpdir(), "video-agent-assembly-"));
+  const outputPath = path.join(temp, "framehouse-final.mp4");
+  const subtitlePath = path.join(temp, "captions.srt");
+  try {
+    const inputs = [];
+    const renderSegments = [];
+    let totalDuration = 0;
+    for (const [index, segment] of segments.entries()) {
+      const videoPath = path.join(temp, `shot-${index + 1}.mp4`);
+      const audioPath = path.join(temp, `shot-${index + 1}.mp3`);
+      await Promise.all([
+        writeFile(videoPath, Buffer.from(segment.videoBase64, "base64")),
+        writeFile(audioPath, Buffer.from(segment.audioBase64, "base64")),
+      ]);
+      const audioDuration = Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audioPath], { encoding: "utf8" }).trim());
+      if (!Number.isFinite(audioDuration) || audioDuration <= 0 || audioDuration > 60) {
+        throw Object.assign(new Error(`Shot ${index + 1} has an invalid or unexpectedly long audio clip.`), { statusCode: 400 });
+      }
+      const outputDuration = Math.max(Number(segment.durationSeconds), audioDuration);
+      renderSegments.push({ ...segment, durationSeconds: outputDuration });
+      totalDuration += outputDuration;
+      inputs.push(videoPath, audioPath);
+    }
+    if (totalDuration > 120) throw Object.assign(new Error("The assembled video would exceed 120 seconds after fitting the voice clips."), { statusCode: 400 });
+
+    const filters = [];
+    const videoLabels = [];
+    const audioLabels = [];
+    for (const [index, segment] of renderSegments.entries()) {
+      const videoInput = index * 2;
+      const audioInput = videoInput + 1;
+      const seconds = Number(segment.durationSeconds);
+      filters.push(`[${videoInput}:v:0]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=24,setsar=1,tpad=stop_mode=clone:stop_duration=${seconds},trim=duration=${seconds},setpts=PTS-STARTPTS,format=yuv420p[v${index}]`);
+      filters.push(`[${audioInput}:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration=${seconds},asetpts=PTS-STARTPTS[a${index}]`);
+      videoLabels.push(`[v${index}]`);
+      audioLabels.push(`[a${index}]`);
+    }
+    filters.push(`${videoLabels.join("")}concat=n=${segments.length}:v=1:a=0[vout]`);
+    filters.push(`${audioLabels.join("")}concat=n=${segments.length}:v=0:a=1[aout]`);
+
+    const args = ["-hide_banner", "-loglevel", "error", "-y"];
+    for (const inputPath of inputs) args.push("-i", inputPath);
+    const hasCaptions = Boolean(body.subtitles && renderSegments.some((segment) => String(segment.transcript || "").trim()));
+    if (hasCaptions) {
+      await writeFile(subtitlePath, shotSubtitleFileText(renderSegments), "utf8");
+      args.push("-i", subtitlePath);
+    }
+    args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", "[aout]");
+    if (hasCaptions) args.push("-map", `${inputs.length}:s:0`);
+    args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k");
+    if (hasCaptions) args.push("-c:s", "mov_text", "-metadata:s:s:0", "language=chi");
+    args.push("-t", String(totalDuration), "-movflags", "+faststart", outputPath);
+    await runFfmpeg(args);
+    return await readFile(outputPath);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}
+
 async function exportMp4(body) {
   if (!body.videoBase64 || !body.audioBase64) throw Object.assign(new Error("Both a generated scene and voiceover are required."), { statusCode: 400 });
   const temp = await mkdtemp(path.join(os.tmpdir(), "video-agent-export-"));
@@ -522,6 +631,13 @@ async function handleApi(request, response, pathname) {
     const body = await readJson(request);
     const video = await exportMp4(body);
     response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "Content-Disposition": 'attachment; filename="video-agent-reel.mp4"', "Cache-Control": "no-store" });
+    return response.end(video);
+  }
+
+  if (pathname === "/api/export-segments" && request.method === "POST") {
+    const body = await readJson(request, 120 * 1024 * 1024);
+    const video = await exportShotAssembly(body);
+    response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "Content-Disposition": 'attachment; filename="framehouse-final.mp4"', "Cache-Control": "no-store" });
     return response.end(video);
   }
 

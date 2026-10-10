@@ -15,6 +15,7 @@ const state = {
   audioReady: false,
   videoBlob: null,
   videoUrl: null,
+  finalVideoUrl: null,
   firstFrame: null,
   lastFrame: null,
   selectedVoice: "Xiaoyi",
@@ -100,6 +101,7 @@ function saveDraft() {
 
 function setStep(step) {
   state.currentStep = step;
+  if (step === "finish") configureExportMode();
   $$(".step").forEach((button) => button.classList.toggle("active", button.dataset.step === step));
   $("#editorColumn")?.setAttribute("hidden", "");
   $("#ideasPanel").hidden = step !== "ideas";
@@ -498,9 +500,13 @@ function renderProductionPlan(proposal) {
   const root = $("#productionResults");
   root.replaceChildren();
   root.hidden = false;
+  state.shotMedia.forEach((shot) => {
+    if (shot.audioUrl) URL.revokeObjectURL(shot.audioUrl);
+    if (shot.videoUrl) URL.revokeObjectURL(shot.videoUrl);
+  });
   state.productionProposal = proposal;
   state.productionVoice = proposal.voiceProfileId || state.selectedVoice;
-  state.shotMedia = (proposal.scenePlan?.segments || []).map((_, index) => state.shotMedia[index] || {});
+  state.shotMedia = (proposal.scenePlan?.segments || []).map(() => ({}));
   const scriptPlan = proposal.scriptPlan || {};
   const transcriptBlocks = scriptPlan.transcriptBlocks || [];
   const header = element("section", "ideas-section");
@@ -589,8 +595,49 @@ function renderProductionPlan(proposal) {
   use.addEventListener("click", generateAllShots);
   const actions = element("div", "idea-actions");
   actions.append(use);
+  const exportShots = element("button", "secondary-button", "合并镜头与配音并导出最终 MP4");
+  exportShots.type = "button";
+  exportShots.id = "productionExport";
+  exportShots.disabled = true;
+  exportShots.title = "先生成所有镜头的 Veo 视频和 Qwen 音频";
+  exportShots.addEventListener("click", () => {
+    configureExportMode();
+    setStep("finish");
+  });
+  actions.append(exportShots);
   header.append(note, actions);
   root.append(header, transcriptSection, sceneSection);
+  syncProductionExport();
+}
+
+function syncProductionExport() {
+  const button = $("#productionExport");
+  if (!button) return;
+  const ready = Boolean(state.shotMedia.length) && state.shotMedia.every((shot) => shot.videoBlob && shot.audioBlob);
+  button.disabled = !ready;
+  button.title = ready ? "打开最终视频导出" : "先生成所有镜头的 Veo 视频和 Qwen 音频";
+}
+
+function configureExportMode() {
+  const multiShot = Boolean(state.productionProposal);
+  const outputButton = $("#downloadVideo");
+  const buttonLabel = `<span>↓</span> ${multiShot ? "Assemble shots + audio" : "Merge voiceover"} · Download MP4`;
+  outputButton.dataset.originalLabel = buttonLabel;
+  if (!outputButton.disabled) outputButton.innerHTML = buttonLabel;
+  $("#exportModeTitle").textContent = multiShot ? "多镜头成片 · 画面 + 逐镜旁白" : "单镜成片 · 画面 + 旁白";
+  const longEdge = $("#resolution").value === "720p" ? 720 : 1080;
+  const dimensions = $("#aspectRatio").value === "16:9"
+    ? `${Math.round(longEdge * 16 / 9)} × ${longEdge}`
+    : `${longEdge} × ${Math.round(longEdge * 16 / 9)}`;
+  $("#exportModeFormat").textContent = `MP4 · H.264 · ${dimensions} · 24 fps`;
+  $("#exportModeDescription").textContent = multiShot
+    ? "按分镜顺序拼接所有 Veo 片段，逐镜铺入对应 Qwen 旁白，并导出带可选中文字幕的最终 MP4。"
+    : "将生成的 Qwen 旁白合并到 Veo 视频中，并导出带可选中文字幕的最终 MP4。";
+  $("#loopSceneSetting").hidden = multiShot;
+  if (multiShot) {
+    const duration = Number(state.productionProposal.durationSeconds) || state.productionProposal.scenePlan.segments.reduce((sum, segment) => sum + (segment.endMs - segment.startMs) / 1000, 0);
+    $("#exportDuration").textContent = `~${secondsLabel(duration)}`;
+  }
 }
 
 function renderShotMedia(index) {
@@ -620,6 +667,7 @@ function renderShotMedia(index) {
     link.download = `shot-${String(index + 1).padStart(2, "0")}.mp4`;
     root.append(link);
   }
+  syncProductionExport();
 }
 
 function plannedSceneTranscript(segment) {
@@ -835,7 +883,7 @@ async function generateAllShots() {
         return;
       }
     }
-    feedback("#scriptFeedback", "所有镜头音频和 Veo 片段均已生成。可逐个播放或下载 MP3 / MP4 片段。", "success");
+    feedback("#scriptFeedback", "所有镜头音频和 Veo 片段均已生成。可逐个预览/下载，也可合并旁白与镜头导出最终 MP4。", "success");
   } finally {
     state.generatingShotSequence = false;
     setBusy(button, false);
@@ -1134,7 +1182,12 @@ function blobToBase64(blob) {
 async function exportVideo() {
   const button = $("#downloadVideo");
   clearFeedback("#exportFeedback");
-  if (!state.videoBlob) {
+  const multiShot = Boolean(state.productionProposal);
+  if (multiShot && !state.shotMedia.every((shot) => shot.videoBlob && shot.audioBlob)) {
+    feedback("#exportFeedback", "请先生成每个镜头的 Veo 视频和对应 Qwen 音频，再合并导出。", "error");
+    return;
+  }
+  if (!multiShot && !state.videoBlob) {
     if (state.isDemoVideo) {
       const anchor = document.createElement("a");
       anchor.href = "/edge_samples/demo_listing_reel.mp4";
@@ -1146,26 +1199,57 @@ async function exportVideo() {
     feedback("#exportFeedback", "Generate a video scene before exporting.", "error");
     return;
   }
-  if (!state.audioBlob) {
+  if (!multiShot && !state.audioBlob) {
     feedback("#exportFeedback", "Generate a voiceover before exporting the narrated reel.", "error");
     return;
   }
-  setBusy(button, true, "Preparing MP4…");
+  setBusy(button, true, multiShot ? "拼接镜头并混入旁白…" : "合并画面与旁白…");
   try {
-    const response = await fetch("/api/export", {
+    const endpoint = multiShot ? "/api/export-segments" : "/api/export";
+    const payload = multiShot
+      ? {
+          segments: await Promise.all(state.shotMedia.map(async (shot, index) => {
+            const segment = state.productionProposal.scenePlan.segments[index];
+            return {
+              videoBase64: await blobToBase64(shot.videoBlob),
+              audioBase64: await blobToBase64(shot.audioBlob),
+              transcript: sceneTranscript(segment, index),
+              durationSeconds: (Number(segment.endMs) - Number(segment.startMs)) / 1000,
+            };
+          })),
+          aspectRatio: $("#aspectRatio").value,
+          resolution: $("#resolution").value,
+          subtitles: $("#subtitles").checked,
+        }
+      : {
+          videoBase64: await blobToBase64(state.videoBlob),
+          audioBase64: await blobToBase64(state.audioBlob),
+          transcript: transcript.value.trim(),
+          subtitles: $("#subtitles").checked,
+          loopVideo: $("#loopScene").checked,
+        };
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videoBase64: await blobToBase64(state.videoBlob), audioBase64: await blobToBase64(state.audioBlob), transcript: transcript.value.trim(), subtitles: $("#subtitles").checked, loopVideo: $("#loopScene").checked }),
+      body: JSON.stringify(payload),
     });
     if (!response.ok) throw await apiError(response);
     const mp4 = await response.blob();
     const url = URL.createObjectURL(mp4);
+    if (state.finalVideoUrl) URL.revokeObjectURL(state.finalVideoUrl);
+    state.finalVideoUrl = url;
+    previewVideo.src = url;
+    previewVideo.load();
+    state.isDemoVideo = false;
+    $("#previewLabel").textContent = "Final assembled video";
+    $("#previewState").textContent = "FINAL MP4 READY";
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "video-agent-reel.mp4";
+    anchor.download = multiShot ? "framehouse-final.mp4" : "video-agent-reel.mp4";
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 15000);
-    feedback("#exportFeedback", "Your MP4 is ready and downloaded.");
+    feedback("#exportFeedback", multiShot
+      ? "所有 Veo 镜头已按顺序拼接，并混入对应旁白。最终 MP4 已下载，也可在右侧预览。"
+      : "Veo 视频已合并 Qwen 旁白。最终 MP4 已下载，也可在右侧预览。");
     showToast("MP4 exported");
   } catch (error) {
     feedback("#exportFeedback", error.message, "error");

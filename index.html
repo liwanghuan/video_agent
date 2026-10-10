@@ -183,11 +183,11 @@
 
           <section class="finish-panel" id="finishPanel" hidden>
             <div class="panel-heading"><div><span class="panel-index">03 / POLISH & EXPORT</span><h2>Make it ready to share</h2></div><span class="connected-label"><i></i> MP4</span></div>
-            <p class="panel-description">Keep the voiceover in front and add a few finishing touches before export.</p>
-            <div class="finish-setting"><div><strong>Extend the scene to fit</strong><small>Repeat the short scene so narration plays through.</small></div><label class="toggle"><input id="loopScene" type="checkbox" checked /><span></span></label></div>
+            <p class="panel-description" id="exportModeDescription">Overlay the generated voiceover on your Veo scene, or assemble the shot-by-shot clips and matching audio into one MP4.</p>
+            <div class="finish-setting" id="loopSceneSetting"><div><strong>Extend the scene to fit</strong><small>Repeat the short scene so narration plays through.</small></div><label class="toggle"><input id="loopScene" type="checkbox" checked /><span></span></label></div>
             <div class="finish-setting"><div><strong>Include Chinese captions</strong><small>Add a selectable subtitle track to the MP4.</small></div><label class="toggle"><input id="subtitles" type="checkbox" checked /><span></span></label></div>
             <div class="finish-setting"><div><strong>Platform safe margins</strong><small>Keep important text clear of app controls.</small></div><label class="toggle"><input id="safeMargins" type="checkbox" checked /><span></span></label></div>
-            <div class="export-summary"><span class="summary-icon">▣</span><span><strong>Vertical social video</strong><small>MP4 · H.264 · 1080 × 1920 · 24 fps</small></span><span class="summary-duration" id="exportDuration">~0:12</span></div>
+            <div class="export-summary"><span class="summary-icon">▣</span><span><strong id="exportModeTitle">Narrated scene</strong><small id="exportModeFormat">MP4 · H.264 · 1080 × 1920 · 24 fps</small></span><span class="summary-duration" id="exportDuration">~0:12</span></div>
             <div class="panel-divider"></div><div class="panel-bottom-row"><button class="secondary-button" id="backToMotion">← Motion</button><button class="primary-button" id="downloadVideo"><span>↓</span> Download MP4</button></div>
             <div class="inline-feedback" id="exportFeedback" role="status" hidden></div>
           </section>

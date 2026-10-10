@@ -24,9 +24,9 @@ For local Vertex requests, sign in with Application Default Credentials:
 gcloud auth application-default login
 ```
 
-The Qwen endpoint is a separate model service. The UI does not put Google or Qwen credentials in the browser. The server calls Qwen first, sends the transcript with the chosen visual direction and frame(s) to Veo, then muxes the generated scene and narration into an MP4 with FFmpeg.
+The Qwen endpoint is a separate model service. The UI does not put Google or Qwen credentials in the browser. The server calls Qwen and Vertex; FFmpeg combines their outputs into downloadable MP4 files.
 
-When `ADK_PLANNER_URL` is configured, the Ideas screen also offers a multi-agent full-video planning action. The ADK service sequentially proposes timed transcript blocks, Veo scene prompts, and review warnings; the UI can display the proposal and copy its transcript into the existing workflow. This first slice does not yet persist the proposal or run per-segment Qwen/Veo jobs; those remain follow-on implementation work.
+When `ADK_PLANNER_URL` is configured, the Ideas screen offers a multi-agent full-video plan. It returns timed transcript blocks and per-shot opening-frame, closing-frame, and Veo motion prompts. Review and edit each shot, then generate its Qwen audio and silent Veo video. Shots run sequentially so each next Veo request starts from the actual last frame extracted from the preceding clip. Media currently lives in the browser session and is not persisted as a cloud project.
 
 ## Deploy the UI and Vertex proxy to Cloud Run
 
@@ -47,7 +47,7 @@ gcloud builds submit \
 gcloud run deploy framehouse-studio \
   --image "$REGION-docker.pkg.dev/$PROJECT_ID/framehouse/studio:latest" \
   --region "$REGION" \
-  --memory 1Gi \
+  --memory 2Gi \
   --cpu 2 \
   --timeout 900 \
   --no-allow-unauthenticated \
@@ -61,8 +61,9 @@ Grant `roles/aiplatform.user` to the Cloud Run service account and `roles/storag
 0. `/api/ideas` sends your brief, target platform, photos (up to 6, downscaled in the browser) and optionally your current script and opening frame to Gemini. Gemini reviews the materials, uses Google Search grounding to find accounts and formats working on that platform now, and returns a materials review, trend notes with links, and three ready-to-use scripts with camera directions. "Use draft as-is" fills the transcript and motion direction straight away.
    - **Step 1 · Original idea:** "Develop this idea" copies an idea into an editable original-idea box, or "I already have an idea" lets you write your own.
    - **Step 2 · Script & screenplay:** `/api/script` sends the original idea, target length (15/30/45/60s), presenter choice (real person, digital human, none, or let the agent choose) and photos to Gemini. It returns a script that follows the 3s + 5s rule (a hook in the first 3 seconds, a new point at least every 5 seconds), a presenter brief, and a shot-by-shot screenplay with shot size, angle, camera move, presenter action, on-screen text, voiceover, sound, transition and source. The UI flags beats that break the timing, and you can copy or download the screenplay as Markdown or send the voiceover and opening motion to step 01.
-1. `/api/tts` sends the written transcript and voice choice to the configured Qwen endpoint.
-2. `/api/video` submits the selected opening frame, optional ending frame, and motion direction to Vertex AI Veo 3.1 Fast. It disables Veo audio because the separately generated Qwen narration is the soundtrack.
-3. `/api/export` combines the scene and narration into an MP4 with H.264 video and AAC audio.
+1. The ADK planner produces a transcript with shot timing and a video plan. Each scene gets a narration block, an opening/closing still-frame prompt, and a silent Veo motion prompt. The service validates that transcript blocks map to the scene containing their midpoint and shares each shot's closing composition with the next shot.
+2. `/api/tts` generates each shot's narration using the same selected voice profile. `/api/video` generates the corresponding silent Veo 3.1 Fast clip. The browser passes the first uploaded photo to shot 1, then extracts each generated clip's final frame for the next shot's opening image.
+3. For the single-scene workflow, `/api/export` overlays the generated voiceover on the Veo scene, optionally loops the scene to cover longer narration, adds an optional selectable Chinese subtitle track, and exports H.264/AAC MP4.
+4. For the storyboard workflow, `/api/export-segments` normalizes and concatenates ordered Veo clips and their matching Qwen audio tracks, adds an optional selectable Chinese subtitle track, and exports one final MP4. Short narration tracks are padded with silence to the shot boundary; if a voice track runs longer than its shot, that shot's last frame is held so speech is not cut off. The assembly route accepts up to 15 shots and 120 seconds, with a 120 MiB JSON request limit.
 
-Veo supports 4, 6, or 8 seconds per scene. Longer narration currently keeps the narration length by looping the generated scene during export; a multi-scene storyboard is a better follow-up for longer listing scripts. The included demo MP4 is explicitly a sample output and does not imply that either cloud model is connected.
+Veo supports 4, 6, or 8 seconds per scene. Single-scene export can loop that scene to cover narration; the multi-shot workflow instead concatenates its planned clips and keeps each narration track aligned to its shot. The included demo MP4 is explicitly a sample output and does not imply that either cloud model is connected.
