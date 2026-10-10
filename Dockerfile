@@ -6,7 +6,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY package.json server.js index.html styles.css app.js ./
-COPY f30881536.jpg f30977280.mp4 ./
+COPY f30881536.jpg ./
 COPY edge_samples ./edge_samples
 
 ENV NODE_ENV=production

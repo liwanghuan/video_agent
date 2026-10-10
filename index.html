@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f5f2" />
-    <meta name="description" content="Create polished property and product reels from a listing, voiceover, and a few photos." />
-    <title>Framehouse — Listing video studio</title>
+    <meta name="description" content="Plan, voice, animate and export short social videos from a script and a few photos." />
+    <title>Video Agent</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -14,9 +14,9 @@
   <body>
     <div class="app-shell">
       <aside class="sidebar">
-        <a class="brand" href="#" aria-label="Framehouse home">
+        <a class="brand" href="#" aria-label="Video Agent home">
           <span class="brand-mark"><span></span><span></span><span></span></span>
-          <span>framehouse</span>
+          <span>video_agent</span>
         </a>
 
         <button class="new-project"><span class="plus">+</span> New video <kbd>⌘ K</kbd></button>
@@ -48,17 +48,41 @@
 
         <div class="workspace-content">
           <div class="title-row">
-            <div><div class="page-kicker"><span class="kicker-line"></span> LISTING REEL <span class="kicker-muted">· DRAFT 04</span></div><h1>Make this place <span>move.</span></h1><p class="title-subtitle">A little story goes a long way. Build your next listing reel here.</p></div>
+            <div><div class="page-kicker"><span class="kicker-line"></span> VIDEO PROJECT <span class="kicker-muted">· DRAFT 04</span></div><h1>Make your story <span>move.</span></h1><p class="title-subtitle">Start from an idea, then turn a script and a few photos into a short social video.</p></div>
             <button class="save-status" id="saveStatus"><span class="save-check">✓</span> <span id="saveLabel">All changes saved</span> <span class="chevron-down">⌄</span></button>
           </div>
 
           <nav class="stepper" aria-label="Video creation steps">
-            <button class="step active" data-step="audio"><span class="step-number">01</span><span class="step-name">Voiceover</span><span class="step-state">In progress</span></button>
-            <span class="step-connector done"></span>
+            <button class="step active" data-step="ideas"><span class="step-number">00</span><span class="step-name">Ideas</span></button>
+            <span class="step-connector"></span>
+            <button class="step" data-step="audio"><span class="step-number">01</span><span class="step-name">Voiceover</span></button>
+            <span class="step-connector"></span>
             <button class="step" data-step="motion"><span class="step-number">02</span><span class="step-name">Bring to life</span></button>
             <span class="step-connector"></span>
             <button class="step" data-step="finish"><span class="step-number">03</span><span class="step-name">Polish & export</span></button>
           </nav>
+
+          <section class="ideas-panel" id="ideasPanel">
+            <div class="ideas-input">
+              <div class="panel-heading"><div><span class="panel-index">00 / IDEAS</span><h2>What should this video be?</h2></div><span class="connected-label" id="ideasConnection"><i></i> NOT CONNECTED</span></div>
+              <p class="panel-description">Tell us what you're promoting and add the photos you have. We'll review your materials, look up what's working on the platform right now, and suggest scripts you can use.</p>
+              <label class="field-label" for="ideaBrief">What are you making?</label>
+              <textarea class="prompt-field" id="ideaBrief" rows="4" placeholder="e.g. A Singapore furniture shop selling factory-direct Chinese sofas with delivery and installation. Audience: Chinese-speaking families who just moved here."></textarea>
+              <div class="prompt-options ideas-options"><label>Platform<select id="ideaPlatform"><option>Rednote</option><option>Instagram Reels</option><option>TikTok</option><option>Douyin</option><option>Facebook</option></select></label></div>
+              <div class="field-label-row"><label>Your materials</label><span class="ideas-count" id="ideaMaterialCount">0 photos</span></div>
+              <div class="ideas-materials" id="ideaMaterials">
+                <label class="ideas-add" for="ideaImagesInput"><span class="add-frame-icon">+</span><span>Add photos</span></label>
+              </div>
+              <input id="ideaImagesInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+              <label class="ideas-check"><input type="checkbox" id="ideaUseDraft" checked /> Include my current script and opening frame</label>
+              <div class="panel-divider"></div>
+              <div class="panel-bottom-row"><button class="secondary-button" id="skipIdeas">Skip to voiceover</button><button class="primary-button" id="generateIdeas"><span class="sparkle">✳</span> Get ideas <span class="button-arrow">→</span></button></div>
+              <div class="inline-feedback" id="ideasFeedback" role="status" hidden></div>
+            </div>
+            <div class="ideas-results" id="ideasResults" aria-live="polite">
+              <div class="ideas-empty" id="ideasEmpty"><span class="preview-play-icon">✳</span><strong>Your ideas will appear here</strong><span>A review of your materials, accounts doing well on the platform right now, and three ready-to-record scripts.</span></div>
+            </div>
+          </section>
 
           <div class="studio-grid">
             <section class="editor-column" aria-live="polite">
@@ -144,7 +168,7 @@
             <div class="inline-feedback" id="exportFeedback" role="status" hidden></div>
           </section>
 
-          <footer class="workspace-footer"><span>Good stories help people picture themselves there.</span><span>Made with care in Singapore <b>✳</b></span></footer>
+          <footer class="workspace-footer"><span>Good stories help people picture themselves in them.</span><span>Made with care in Singapore <b>✳</b></span></footer>
         </div>
       </main>
     </div>

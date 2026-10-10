@@ -1,6 +1,6 @@
-# Framehouse Listing Studio
+# Video Agent
 
-This is the GitHub project for a video cutting and generation agent. Framehouse is a browser-based workspace for turning a listing transcript and property photos into a social video. It includes Xiaoyi voice samples, sample listing media, and a demo preview. Live generation is available when the backend is configured with a Qwen3-TTS service and Google Cloud Vertex AI.
+This is the GitHub project for a video cutting and generation agent. Video Agent is a browser-based workspace that helps you decide what video to make, then turns a transcript and a few photos into a short social video. It includes Xiaoyi voice samples, sample listing media, and a demo preview. Idea generation uses Gemini with Google Search grounding; live voice and video generation need a Qwen3-TTS service and Google Cloud Vertex AI.
 
 ## Run locally
 
@@ -12,6 +12,7 @@ Open [http://localhost:5173](http://localhost:5173). No frontend build step or n
 
 Copy `.env.example` to `.env` and set:
 
+- `GEMINI_API_KEY`: turns on step 00, Ideas. `IDEAS_MODEL_ID` can override the default `gemini-3.8-flash`.
 - `QWEN_TTS_ENDPOINT`: an endpoint that accepts `{ "text", "voice", "format" }` and returns MP3 bytes or `{ "audioBase64": "..." }`.
 - `GOOGLE_CLOUD_PROJECT` and `VERTEX_OUTPUT_URI`: a project with Vertex AI and a writable Cloud Storage output prefix.
 - `VERTEX_LOCATION` and `VERTEX_MODEL_ID` can override the defaults.
@@ -45,13 +46,14 @@ gcloud run deploy framehouse-studio \
   --cpu 2 \
   --timeout 900 \
   --no-allow-unauthenticated \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,VERTEX_LOCATION=us-central1,VERTEX_MODEL_ID=veo-3.1-fast-generate-001,VERTEX_OUTPUT_URI=gs://$BUCKET/framehouse/,QWEN_TTS_ENDPOINT=$QWEN_TTS_ENDPOINT"
+  --set-env-vars "GEMINI_API_KEY=$GEMINI_API_KEY,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,VERTEX_LOCATION=us-central1,VERTEX_MODEL_ID=veo-3.1-fast-generate-001,VERTEX_OUTPUT_URI=gs://$BUCKET/framehouse/,QWEN_TTS_ENDPOINT=$QWEN_TTS_ENDPOINT"
 ```
 
 Grant `roles/aiplatform.user` to the Cloud Run service account and `roles/storage.objectUser` on the output bucket. The service reads its Cloud Run identity token through the metadata server and uses an identity token to call a private Cloud Run Qwen endpoint. For production, keep the studio service authenticated for agent access.
 
 ## Live generation sequence
 
+0. `/api/ideas` sends your brief, target platform, photos (up to 6, downscaled in the browser) and optionally your current script and opening frame to Gemini. Gemini reviews the materials, uses Google Search grounding to find accounts and formats working on that platform now, and returns a materials review, trend notes with links, and three ready-to-use scripts with camera directions. "Use this idea" fills the transcript and motion direction.
 1. `/api/tts` sends the written transcript and voice choice to the configured Qwen endpoint.
 2. `/api/video` submits the selected opening frame, optional ending frame, and motion direction to Vertex AI Veo 3.1 Fast. It disables Veo audio because the separately generated Qwen narration is the soundtrack.
 3. `/api/export` combines the scene and narration into an MP4 with H.264 video and AAC audio.

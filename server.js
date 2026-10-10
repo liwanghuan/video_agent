@@ -25,6 +25,9 @@ const location = process.env.VERTEX_LOCATION || "us-central1";
 const model = process.env.VERTEX_MODEL_ID || "veo-3.1-fast-generate-001";
 const qwenEndpoint = process.env.QWEN_TTS_ENDPOINT || "";
 const outputUri = process.env.VERTEX_OUTPUT_URI || "";
+const ideasModel = process.env.IDEAS_MODEL_ID || "gemini-3.8-flash";
+const geminiApiKey = process.env.GEMINI_API_KEY || "";
+const ideasConfigured = Boolean(geminiApiKey);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -175,6 +178,91 @@ async function generateVeo(body) {
   throw new Error(result.raiMediaFilteredReasons?.join(" ") || "Veo finished without returning a video. Check the prompt and try again.");
 }
 
+const IDEAS_SYSTEM = `You are the creative strategist inside Video Agent, a tool that turns a short script and a few photos into a 10–30 second vertical social video (AI camera motion from a still photo + a Mandarin voiceover + captions).
+
+Your job, before anything is produced:
+1. Look honestly at the creator's materials (their brief, any draft script, and the attached photos). Say what is strong, and what is missing or weak for the target platform. Be concrete about what they should provide or shoot next (e.g. "a wide shot of the whole room in daylight", "a price or offer line", "a face-to-camera opener").
+2. Use web search to find what is working right now on the target platform for this niche: real, currently active accounts and the formats/hooks they use. Prefer sources from the last few months. Do not invent accounts; if you cannot verify an account, describe the trending format instead and leave "account" as a short format name and "url" empty.
+3. Propose 3 distinct video ideas that this creator can make with this tool and their materials (or with one or two extra shots you named). Each idea is one scene: one opening photo, one camera move, one voiceover.
+
+The voiceover script must be in natural spoken Simplified Chinese (Mandarin), 60–160 characters, written to be heard, with a hook in the first sentence. The motion direction must be in English, describe one small believable camera move, and tell the model to keep the subject's design, proportions and colours unchanged.
+
+Reply with only a JSON object, no prose before or after it and no markdown fences, in exactly this shape:
+{
+  "materials": {
+    "summary": "one or two sentences on what the creator has",
+    "strengths": ["..."],
+    "gaps": [{"item": "what to provide or shoot", "why": "why it matters for this platform"}]
+  },
+  "trends": [
+    {"account": "account name or format name", "platform": "...", "style": "what they do", "takeaway": "what this creator should borrow", "url": "https://... or empty"}
+  ],
+  "ideas": [
+    {"title": "short name", "angle": "why this will work", "hook": "the first line, in Chinese", "script": "full voiceover, in Chinese", "motion": "camera direction for the video model, in English", "shots": ["which photo to open on, and any extra shot needed"]}
+  ]
+}
+Give 3–5 trends and exactly 3 ideas. All user-facing text other than "hook" and "script" should be in English.`;
+
+function parseIdeasJson(text) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end <= start) throw new Error("The idea model did not return a plan. Try again.");
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    throw new Error("The idea model returned a plan that could not be read. Try again.");
+  }
+}
+
+function searchSources(candidate) {
+  const sources = new Map();
+  for (const chunk of candidate?.groundingMetadata?.groundingChunks || []) {
+    const url = chunk.web?.uri;
+    if (url && !sources.has(url)) sources.set(url, { url, title: chunk.web.title || url });
+  }
+  return [...sources.values()].slice(0, 10);
+}
+
+async function generateIdeas(body) {
+  if (!ideasConfigured) throw Object.assign(new Error("Set GEMINI_API_KEY in .env to turn on idea generation."), { statusCode: 503 });
+  const platform = String(body.platform || "Rednote").slice(0, 40);
+  const images = (Array.isArray(body.images) ? body.images : [])
+    .filter((image) => /^image\/(jpeg|png|webp|gif)$/.test(image?.mimeType) && image?.data)
+    .slice(0, 6);
+  const parts = images.flatMap((image, index) => [
+    { text: `Photo ${index + 1}${image.name ? ` (${String(image.name).slice(0, 80)})` : ""}:` },
+    { inlineData: { mimeType: image.mimeType, data: image.data } },
+  ]);
+  parts.push({
+    text: [
+      `Target platform: ${platform}`,
+      `Today's date: ${new Date().toISOString().slice(0, 10)}`,
+      `Creator's brief: ${String(body.brief || "").trim().slice(0, 2000) || "(none given; infer the niche from the photos and script)"}`,
+      `Current draft script: ${String(body.transcript || "").trim().slice(0, 1200) || "(none yet)"}`,
+      images.length ? `${images.length} photo(s) attached above.` : "No photos attached.",
+    ].join("\n"),
+  });
+
+  const result = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ideasModel)}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: IDEAS_SYSTEM }] },
+      contents: [{ role: "user", parts }],
+      tools: [{ google_search: {} }],
+      generationConfig: { maxOutputTokens: 32000 },
+    }),
+  });
+  const payload = await result.json().catch(() => ({}));
+  if (!result.ok) throw new Error(payload.error?.message || `Gemini request failed with HTTP ${result.status}.`);
+  if (payload.promptFeedback?.blockReason) throw new Error("The idea model declined this request. Try rewording the brief.");
+  const candidate = payload.candidates?.[0];
+  if (["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION"].includes(candidate?.finishReason)) throw new Error("The idea model declined this request. Try rewording the brief.");
+  if (candidate?.finishReason === "MAX_TOKENS") throw new Error("The idea plan was cut off. Try a shorter brief.");
+  const text = (candidate?.content?.parts || []).filter((part) => part.text && !part.thought).map((part) => part.text).join("");
+  return { ...parseIdeasJson(text), sources: searchSources(candidate), model: payload.modelVersion || ideasModel };
+}
+
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -223,7 +311,7 @@ function subtitleFileText(text, durationSeconds) {
 
 async function exportMp4(body) {
   if (!body.videoBase64 || !body.audioBase64) throw Object.assign(new Error("Both a generated scene and voiceover are required."), { statusCode: 400 });
-  const temp = await mkdtemp(path.join(os.tmpdir(), "framehouse-export-"));
+  const temp = await mkdtemp(path.join(os.tmpdir(), "video-agent-export-"));
   const videoPath = path.join(temp, "scene.mp4");
   const audioPath = path.join(temp, "voiceover.mp3");
   const subtitlePath = path.join(temp, "captions.srt");
@@ -261,10 +349,16 @@ async function handleApi(request, response, pathname) {
     return sendJson(response, 200, {
       qwen: Boolean(qwenEndpoint),
       vertex: Boolean(project && outputUri.startsWith("gs://")),
+      ideas: ideasConfigured,
       demo: !(qwenEndpoint && project && outputUri.startsWith("gs://")),
       model,
       location,
     });
+  }
+
+  if (pathname === "/api/ideas" && request.method === "POST") {
+    const body = await readJson(request, 40 * 1024 * 1024);
+    return sendJson(response, 200, await generateIdeas(body));
   }
 
   if (pathname === "/api/tts" && request.method === "POST") {
@@ -305,7 +399,7 @@ async function handleApi(request, response, pathname) {
   if (pathname === "/api/export" && request.method === "POST") {
     const body = await readJson(request);
     const video = await exportMp4(body);
-    response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "Content-Disposition": 'attachment; filename="framehouse-listing-reel.mp4"', "Cache-Control": "no-store" });
+    response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "Content-Disposition": 'attachment; filename="video-agent-reel.mp4"', "Cache-Control": "no-store" });
     return response.end(video);
   }
 
@@ -337,6 +431,6 @@ const server = http.createServer(async (request, response) => {
 
 const HOST = process.env.HOST || (process.env.K_SERVICE ? "0.0.0.0" : "127.0.0.1");
 server.listen(PORT, HOST, () => {
-  console.log(`Framehouse is running at http://localhost:${PORT}`);
-  console.log(`Model mode: ${qwenEndpoint ? "Qwen connected" : "Qwen demo"} · ${project && outputUri ? "Vertex configured" : "Vertex demo"}`);
+  console.log(`Video Agent is running at http://localhost:${PORT}`);
+  console.log(`Model mode: ${ideasConfigured ? "Ideas connected" : "Ideas off"} · ${qwenEndpoint ? "Qwen connected" : "Qwen demo"} · ${project && outputUri ? "Vertex configured" : "Vertex demo"}`);
 });
