@@ -21,6 +21,10 @@ const state = {
   currentStep: "ideas",
   ideaImages: [],
   scriptPlan: savedDraft?.scriptPlan || null,
+  productionProposal: null,
+  productionVoice: null,
+  shotMedia: [],
+  generatingShotSequence: false,
   originalScript: $("#transcript").value.trim(),
   isDemoVideo: true,
   projectId: savedDraft?.projectId || `project_${globalThis.crypto?.randomUUID?.() || Date.now()}`,
@@ -494,6 +498,9 @@ function renderProductionPlan(proposal) {
   const root = $("#productionResults");
   root.replaceChildren();
   root.hidden = false;
+  state.productionProposal = proposal;
+  state.productionVoice = proposal.voiceProfileId || state.selectedVoice;
+  state.shotMedia = (proposal.scenePlan?.segments || []).map((_, index) => state.shotMedia[index] || {});
   const scriptPlan = proposal.scriptPlan || {};
   const transcriptBlocks = scriptPlan.transcriptBlocks || [];
   const header = element("section", "ideas-section");
@@ -510,12 +517,63 @@ function renderProductionPlan(proposal) {
   });
   const sceneSection = element("section", "ideas-section");
   sceneSection.append(element("span", "panel-index", `SCENE PLAN · ${(proposal.scenePlan?.segments || []).length} SEGMENTS`));
-  (proposal.scenePlan?.segments || []).forEach((segment) => {
+  (proposal.scenePlan?.segments || []).forEach((segment, index) => {
     const card = element("article", "production-scene-card");
-    card.append(element("h4", "", `Scene ${Number(segment.index) + 1} · ${(Number(segment.startMs) / 1000).toFixed(0)}–${(Number(segment.endMs) / 1000).toFixed(0)}s`));
-    card.append(element("p", "", segment.prompt || ""));
-    const transcript = transcriptBlocks.filter((block) => (segment.transcriptBlockIds || []).includes(block.id)).map((block) => block.text).join(" ");
-    if (transcript) card.append(element("p", "production-scene-transcript", transcript));
+    card.dataset.shotIndex = String(index);
+    card.append(element("h4", "", `镜头 ${Number(segment.index) + 1} · ${(Number(segment.startMs) / 1000).toFixed(0)}–${(Number(segment.endMs) / 1000).toFixed(0)} 秒`));
+    const transcriptField = element("label", "shot-prompt-field", "本镜旁白文本（可编辑）");
+    const transcriptInput = element("textarea");
+    transcriptInput.rows = 3;
+    transcriptInput.dataset.shotField = "transcript";
+    transcriptInput.value = plannedSceneTranscript(segment) || "";
+    transcriptInput.placeholder = "本镜没有分配到台词，请先调整分镜规划。";
+    transcriptInput.addEventListener("input", () => invalidateShotAfterTranscriptEdit(index));
+    transcriptField.append(transcriptInput);
+    card.append(transcriptField);
+    const opening = element("label", "shot-prompt-field", "起始帧画面提示词");
+    const openingInput = element("textarea");
+    openingInput.rows = 3;
+    openingInput.dataset.shotField = "openingFramePrompt";
+    openingInput.value = segment.openingFramePrompt || (index ? proposal.scenePlan.segments[index - 1]?.closingFramePrompt : "");
+    if (index > 0) {
+      openingInput.readOnly = true;
+      openingInput.title = "由上一镜的结束帧构图自动同步";
+    }
+    opening.append(openingInput);
+    const closing = element("label", "shot-prompt-field", "结束帧画面提示词（下一镜的计划起始构图）");
+    const closingInput = element("textarea");
+    closingInput.rows = 3;
+    closingInput.dataset.shotField = "closingFramePrompt";
+    closingInput.value = segment.closingFramePrompt || "";
+    closingInput.addEventListener("input", () => {
+      const nextOpening = $(`[data-shot-index="${index + 1}"] [data-shot-field="openingFramePrompt"]`);
+      if (nextOpening) nextOpening.value = closingInput.value;
+    });
+    closing.append(closingInput);
+    const motion = element("label", "shot-prompt-field", "Veo 视频动态提示词（静音生成）");
+    const motionInput = element("textarea");
+    motionInput.rows = 4;
+    motionInput.dataset.shotField = "videoPrompt";
+    motionInput.value = segment.videoPrompt || segment.prompt || "";
+    motion.append(motionInput);
+    card.append(opening, closing, motion);
+    const continuity = element("p", "shot-continuity", index === 0
+      ? "首镜使用你选择的开场照片。"
+      : `连续性：实际使用镜头 ${index} 生成视频的最后一帧作为本镜首帧。`);
+    card.append(continuity);
+    const media = element("div", "shot-media");
+    media.dataset.shotMedia = String(index);
+    card.append(media);
+    const actions = element("div", "shot-actions");
+    const audioButton = element("button", "secondary-button", "生成本镜音频");
+    audioButton.type = "button";
+    audioButton.addEventListener("click", () => generateShotAudio(index).catch((error) => feedback("#scriptFeedback", error.message, "error")));
+    const videoButton = element("button", "secondary-button", "生成本镜 Veo 视频");
+    videoButton.type = "button";
+    videoButton.addEventListener("click", () => generateShotVideo(index).catch((error) => feedback("#scriptFeedback", error.message, "error")));
+    actions.append(audioButton, videoButton);
+    card.append(actions);
+    renderShotMedia(index);
     sceneSection.append(card);
   });
   const warningList = proposal.warnings || [];
@@ -524,20 +582,264 @@ function renderProductionPlan(proposal) {
     warningList.forEach((warning) => warnings.append(element("li", "", String(warning))));
     sceneSection.append(warnings);
   }
-  const note = element("p", "production-plan-note", "This is a reviewed proposal, not a saved project or generated media. Confirm the plan before starting audio/video generation.");
-  const use = element("button", "primary-button", "Use transcript in voiceover step →");
+  const note = element("p", "production-plan-note", "逐镜生成会先用同一个 Qwen 音色合成该镜旁白，再生成静音 Veo 片段。连续镜头必须依次生成；后镜会接续前镜真实输出的末帧。请先检查并编辑提示词。");
+  const use = element("button", "primary-button", "按顺序生成全部镜头的音频 + Veo 视频");
   use.type = "button";
-  use.addEventListener("click", () => {
-    transcript.value = transcriptBlocks.map((block) => block.text).join("");
-    if (proposal.scenePlan?.segments?.[0]?.prompt) $("#videoPrompt").value = proposal.scenePlan.segments[0].prompt;
-    updateTranscript();
-    setStep("audio");
-    transcript.focus();
-  });
+  use.id = "generateAllShots";
+  use.addEventListener("click", generateAllShots);
   const actions = element("div", "idea-actions");
   actions.append(use);
   header.append(note, actions);
   root.append(header, transcriptSection, sceneSection);
+}
+
+function renderShotMedia(index) {
+  const root = $(`[data-shot-media="${index}"]`);
+  if (!root) return;
+  root.replaceChildren();
+  const shot = state.shotMedia[index] || {};
+  if (shot.status) root.append(element("p", shot.error ? "shot-status error" : "shot-status", shot.error || shot.status));
+  if (shot.audioUrl) {
+    const audio = element("audio", "shot-audio");
+    audio.controls = true;
+    audio.src = shot.audioUrl;
+    root.append(element("span", "panel-index", `本镜 Qwen 旁白 · ${state.productionVoice || state.selectedVoice}`), audio);
+    const link = element("a", "text-button", "下载 MP3");
+    link.href = shot.audioUrl;
+    link.download = `shot-${String(index + 1).padStart(2, "0")}.mp3`;
+    root.append(link);
+  }
+  if (shot.videoUrl) {
+    const video = element("video", "shot-video");
+    video.controls = true;
+    video.playsInline = true;
+    video.src = shot.videoUrl;
+    root.append(element("span", "panel-index", "本镜 Veo 片段"), video);
+    const link = element("a", "text-button", "下载 MP4 片段");
+    link.href = shot.videoUrl;
+    link.download = `shot-${String(index + 1).padStart(2, "0")}.mp4`;
+    root.append(link);
+  }
+}
+
+function plannedSceneTranscript(segment) {
+  const blocks = state.productionProposal?.scriptPlan?.transcriptBlocks || [];
+  const midpoint = Math.floor((Number(segment.startMs) + Number(segment.endMs)) / 2);
+  return blocks.filter((block) => Number(block.startMs) <= midpoint && Number(block.endMs) > midpoint).map((block) => block.text).join(" ").trim();
+}
+
+function sceneTranscript(segment, index) {
+  const edited = Number.isInteger(index) ? $(`[data-shot-index="${index}"] [data-shot-field="transcript"]`)?.value : null;
+  return (edited ?? plannedSceneTranscript(segment)).trim();
+}
+
+function invalidateShotAfterTranscriptEdit(index) {
+  const shot = state.shotMedia[index];
+  if (shot?.audioUrl) URL.revokeObjectURL(shot.audioUrl);
+  if (shot) {
+    shot.audioBlob = null;
+    shot.audioUrl = null;
+    shot.status = "台词已修改；请重新生成音频和视频";
+  }
+  for (let next = index; next < state.shotMedia.length; next += 1) {
+    const dependent = state.shotMedia[next];
+    if (dependent?.videoUrl === state.videoUrl) {
+      state.videoUrl = null;
+      previewVideo.removeAttribute("src");
+      previewVideo.load();
+    }
+    if (dependent?.videoUrl) URL.revokeObjectURL(dependent.videoUrl);
+    if (dependent) {
+      dependent.videoBlob = null;
+      dependent.videoUrl = null;
+      dependent.lastFrame = null;
+      if (next > index) dependent.status = dependent.audioBlob ? "等待上游镜头重新生成" : "";
+      renderShotMedia(next);
+    }
+  }
+}
+
+async function lastVideoFrame(blob) {
+  const url = URL.createObjectURL(blob);
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.src = url;
+  try {
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = () => reject(new Error("Could not read the generated clip to link the next shot."));
+    });
+    video.currentTime = Math.max(0, video.duration - 0.08);
+    await new Promise((resolve, reject) => {
+      video.onseeked = resolve;
+      video.onerror = () => reject(new Error("Could not extract the final frame from this clip."));
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function getShotOpeningFrame(index) {
+  if (index > 0) {
+    const prior = state.shotMedia[index - 1];
+    if (!prior?.lastFrame) throw new Error(`请先生成镜头 ${index}，以便将它的末帧用作本镜起始帧。`);
+    return base64Part(prior.lastFrame);
+  }
+  const first = state.firstFrame || state.ideaImages[0]?.dataUrl || await imageToDataUrl("/f30881536.jpg");
+  return base64Part(first);
+}
+
+async function generateShotAudio(index) {
+  const segments = state.productionProposal?.scenePlan?.segments || [];
+  const segment = segments[index];
+  if (!segment) return;
+  if (!state.api.qwen) {
+    feedback("#scriptFeedback", "Qwen3-TTS 尚未连接，无法生成逐镜音频。请先配置 QWEN_TTS_ENDPOINT。", "error");
+    openModal("audio");
+    return;
+  }
+  const text = sceneTranscript(segment, index);
+  if (!text) throw new Error(`镜头 ${index + 1} 没有映射到旁白文本。`);
+  const shot = state.shotMedia[index] ||= {};
+  shot.error = "";
+  shot.status = "正在使用所选的同一音色生成音频…";
+  renderShotMedia(index);
+  try {
+    const response = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice: state.productionVoice || state.selectedVoice }),
+    });
+    if (!response.ok) throw await apiError(response);
+    shot.audioBlob = await response.blob();
+    if (shot.audioUrl) URL.revokeObjectURL(shot.audioUrl);
+    shot.audioUrl = URL.createObjectURL(shot.audioBlob);
+    shot.status = "音频已生成";
+    renderShotMedia(index);
+    return shot;
+  } catch (error) {
+    shot.error = error.message;
+    shot.status = "";
+    renderShotMedia(index);
+    throw error;
+  }
+}
+
+async function generateShotVideo(index) {
+  const segments = state.productionProposal?.scenePlan?.segments || [];
+  const segment = segments[index];
+  if (!segment) return;
+  if (!state.api.vertex) {
+    feedback("#scriptFeedback", "Vertex AI / Veo 尚未连接，无法生成逐镜视频。", "error");
+    openModal("video");
+    return;
+  }
+  const shot = state.shotMedia[index] ||= {};
+  if (!shot.audioBlob) throw new Error(`请先生成镜头 ${index + 1} 的 Qwen 音频，再生成视频。`);
+  // Any downstream video begins from this shot's last frame; replacing this take
+  // invalidates that dependency chain, but its already generated audio remains valid.
+  for (let next = index + 1; next < state.shotMedia.length; next += 1) {
+    const dependent = state.shotMedia[next];
+    if (dependent?.videoUrl === state.videoUrl) {
+      state.videoUrl = null;
+      previewVideo.removeAttribute("src");
+      previewVideo.load();
+    }
+    if (dependent?.videoUrl) URL.revokeObjectURL(dependent.videoUrl);
+    if (dependent) {
+      dependent.videoBlob = null;
+      dependent.videoUrl = null;
+      dependent.lastFrame = null;
+      dependent.status = dependent.audioBlob ? "音频已生成；等待上游镜头重新生成" : "";
+      dependent.error = "";
+      renderShotMedia(next);
+    }
+  }
+  shot.error = "";
+  shot.status = "正在生成静音 Veo 片段…";
+  renderShotMedia(index);
+  try {
+    const card = $(`[data-shot-index="${index}"]`);
+    const videoPrompt = card.querySelector('[data-shot-field="videoPrompt"]').value.trim();
+    const openingFrame = await getShotOpeningFrame(index);
+    const finalIndex = segments.length - 1;
+    const selectedLastFrame = index === finalIndex && state.lastFrame ? base64Part(state.lastFrame) : null;
+    const response = await fetch("/api/video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: `${videoPrompt}\n\nPlanned closing composition: ${card.querySelector('[data-shot-field="closingFramePrompt"]').value.trim()}`,
+        transcript: sceneTranscript(segment, index),
+        firstFrame: openingFrame,
+        lastFrame: selectedLastFrame,
+        durationSeconds: (Number(segment.endMs) - Number(segment.startMs)) / 1000,
+        aspectRatio: $("#aspectRatio").value,
+        resolution: $("#resolution").value,
+      }),
+    });
+    if (!response.ok) throw await apiError(response);
+    shot.videoBlob = await response.blob();
+    if (shot.videoUrl) URL.revokeObjectURL(shot.videoUrl);
+    shot.videoUrl = URL.createObjectURL(shot.videoBlob);
+    shot.lastFrame = await lastVideoFrame(shot.videoBlob);
+    shot.status = "视频片段和连续镜头末帧已就绪";
+    renderShotMedia(index);
+    if (index === 0) {
+      state.videoBlob = shot.videoBlob;
+      if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
+      state.videoUrl = shot.videoUrl;
+      previewVideo.src = shot.videoUrl;
+      previewVideo.load();
+      state.isDemoVideo = false;
+    }
+    return shot;
+  } catch (error) {
+    if (shot.videoUrl === state.videoUrl) {
+      state.videoUrl = null;
+      previewVideo.removeAttribute("src");
+      previewVideo.load();
+    }
+    if (shot.videoUrl) URL.revokeObjectURL(shot.videoUrl);
+    shot.videoBlob = null;
+    shot.videoUrl = null;
+    shot.lastFrame = null;
+    shot.error = error.message;
+    shot.status = "";
+    renderShotMedia(index);
+    throw error;
+  }
+}
+
+async function generateAllShots() {
+  const button = $("#generateAllShots");
+  if (state.generatingShotSequence) return;
+  state.generatingShotSequence = true;
+  setBusy(button, true, "按镜头顺序生成中…");
+  try {
+    const segments = state.productionProposal?.scenePlan?.segments || [];
+    for (let index = 0; index < segments.length; index += 1) {
+      const shot = state.shotMedia[index] ||= {};
+      try {
+        if (!shot.audioBlob) await generateShotAudio(index);
+        if (!shot.videoBlob) await generateShotVideo(index);
+      } catch (error) {
+        feedback("#scriptFeedback", `镜头 ${index + 1} 停止：${error.message}。修正配置后可重新生成；已完成的镜头会保留。`, "error");
+        $(`[data-shot-index="${index}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+    }
+    feedback("#scriptFeedback", "所有镜头音频和 Veo 片段均已生成。可逐个播放或下载 MP3 / MP4 片段。", "success");
+  } finally {
+    state.generatingShotSequence = false;
+    setBusy(button, false);
+  }
 }
 
 async function generateProductionPlan() {

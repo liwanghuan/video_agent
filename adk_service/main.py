@@ -128,15 +128,21 @@ def validate_plan(plan: dict[str, Any], request: PlanRequest) -> None:
             if asset_id is not None and (not isinstance(asset_id, str) or asset_id not in supplied_assets):
                 raise HTTPException(status_code=502, detail=f"Scene references an unknown {key}.")
         ids = segment.get("transcriptBlockIds")
-        if not isinstance(ids, list) or any(not isinstance(block_id, str) or block_id not in seen_block_ids for block_id in ids):
+        if not isinstance(ids, list) or not ids or any(not isinstance(block_id, str) or block_id not in seen_block_ids for block_id in ids):
             raise HTTPException(status_code=502, detail="Scene references an unknown transcript block.")
         for block_id in ids:
             block_start, block_end = block_ranges[block_id]
-            if block_start >= end or block_end <= start:
-                raise HTTPException(status_code=502, detail="A transcript block is mapped to a scene outside its timed range.")
+            midpoint = (block_start + block_end) // 2
+            if midpoint < start or midpoint >= end:
+                raise HTTPException(status_code=502, detail="Map each complete transcript block to the single scene containing its midpoint.")
         transcript_coverage.update(ids)
         if not isinstance(segment.get("prompt"), str) or not segment["prompt"].strip():
             raise HTTPException(status_code=502, detail="Every scene requires a Veo prompt.")
+        for key in ("openingFramePrompt", "closingFramePrompt"):
+            if not isinstance(segment.get(key), str) or not segment[key].strip():
+                raise HTTPException(status_code=502, detail=f"Every scene requires a {key}.")
+        if index and segment["openingFramePrompt"] != segments[index - 1]["closingFramePrompt"]:
+            raise HTTPException(status_code=502, detail="Adjacent scene frame prompts must share the same boundary composition.")
         previous_end = end
 
     if previous_end != request.durationSeconds * 1000:
@@ -196,6 +202,21 @@ async def create_production_plan(request: PlanRequest) -> dict[str, Any]:
         + (script.get("warnings", []) if isinstance(script.get("warnings", []), list) else [str(script["warnings"])]),
         "approvalRequired": True,
     }
+    # Guarantee an identical planned image composition at every shot boundary.
+    # During rendering, the browser also extracts the prior clip's actual final frame
+    # and sends it as the next Veo request's firstFrame.
+    scene_plan_value = proposal.get("scenePlan")
+    segments = scene_plan_value.get("segments", []) if isinstance(scene_plan_value, dict) else []
+    for index, segment in enumerate(segments if isinstance(segments, list) else []):
+        if not isinstance(segment, dict):
+            continue
+        visual = str(segment.get("visualGoal") or segment.get("prompt") or "A natural listing-room composition").strip()
+        segment.setdefault("openingFramePrompt", f"Photorealistic still frame of the same property and furniture. {visual}")
+        segment.setdefault("closingFramePrompt", f"Photorealistic still frame at the end of this shot, maintaining the same property, furniture, materials, and lighting. {visual}")
+        segment.setdefault("videoPrompt", segment.get("prompt", ""))
+        if index:
+            segment["openingFramePrompt"] = segments[index - 1]["closingFramePrompt"]
+            segment["dependencySegmentId"] = segments[index - 1].get("id")
     for block in proposal["scriptPlan"]["transcriptBlocks"]:
         block.setdefault("timingSource", "estimated")
     validate_plan(proposal, request)
