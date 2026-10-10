@@ -6,6 +6,7 @@ try { savedDraft = JSON.parse(localStorage.getItem("framehouse-draft") || "null"
 if (savedDraft?.transcript) $("#transcript").value = savedDraft.transcript;
 if (savedDraft?.videoPrompt) $("#videoPrompt").value = savedDraft.videoPrompt;
 if (savedDraft?.ideaBrief) $("#ideaBrief").value = savedDraft.ideaBrief;
+if (savedDraft?.originalIdea) $("#originalIdea").value = savedDraft.originalIdea;
 
 const state = {
   api: { qwen: false, vertex: false, ideas: false, demo: true },
@@ -19,6 +20,7 @@ const state = {
   selectedVoice: "Xiaoyi",
   currentStep: "ideas",
   ideaImages: [],
+  scriptPlan: savedDraft?.scriptPlan || null,
   originalScript: $("#transcript").value.trim(),
   isDemoVideo: true,
 };
@@ -74,6 +76,8 @@ function saveDraft() {
     transcript: transcript.value,
     videoPrompt: $("#videoPrompt").value,
     ideaBrief: $("#ideaBrief").value,
+    originalIdea: $("#originalIdea").value,
+    scriptPlan: state.scriptPlan,
     voice: state.selectedVoice,
     aspectRatio: $("#aspectRatio").value,
     duration: $("#sceneDuration").value,
@@ -287,11 +291,16 @@ function renderIdeas(plan) {
       idea.shots.forEach((shot) => shots.append(element("li", "", shot)));
       card.append(shots);
     }
-    const use = element("button", "primary-button");
+    const actions = element("div", "idea-actions");
+    const develop = element("button", "primary-button");
+    develop.type = "button";
+    develop.innerHTML = 'Develop this idea <span class="button-arrow">→</span>';
+    develop.addEventListener("click", () => developIdea(idea));
+    const use = element("button", "secondary-button", "Use draft as-is");
     use.type = "button";
-    use.innerHTML = 'Use this idea <span class="button-arrow">→</span>';
     use.addEventListener("click", () => useIdea(idea));
-    card.append(use);
+    actions.append(develop, use);
+    card.append(actions);
     list.append(card);
   });
   ideas.append(list);
@@ -309,6 +318,212 @@ function renderIdeas(plan) {
       sources.append(link);
     });
     results.append(sources);
+  }
+}
+
+function ideaText(idea) {
+  const lines = [];
+  if (idea.title) lines.push(`Title: ${idea.title}`);
+  if (idea.angle) lines.push(`Angle: ${idea.angle}`);
+  if (idea.hook) lines.push(`Hook: ${idea.hook}`);
+  if (idea.script) lines.push(`Draft script: ${idea.script}`);
+  if (idea.shots?.length) lines.push(`Shots:\n${idea.shots.map((shot) => `- ${shot}`).join("\n")}`);
+  return lines.join("\n");
+}
+
+function openDevelop(text) {
+  $("#developPanel").hidden = false;
+  if (text !== undefined) $("#originalIdea").value = text;
+  $("#saveLabel").textContent = "Unsaved changes";
+  $("#developPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("#originalIdea").focus({ preventScroll: true });
+}
+
+function developIdea(idea) {
+  openDevelop(ideaText(idea));
+  showToast("Idea copied to Step 1 — edit it, then write the script");
+}
+
+function pacingIssues(plan) {
+  const issues = [];
+  const hookEnd = Number(plan.hook?.end);
+  if (!(hookEnd <= 3)) issues.push(`the hook runs to ${hookEnd || "?"}s`);
+  (plan.beats || []).forEach((beat, index) => {
+    const length = Number(beat.end) - Number(beat.start);
+    if (!(length <= 5)) issues.push(`beat ${index + 1} is ${Number.isFinite(length) ? length : "?"}s`);
+  });
+  return issues;
+}
+
+function timeRange(item) {
+  return `${Number(item.start) || 0}–${Number(item.end) || 0}s`;
+}
+
+const avatarLabels = { real_person: "Real person", digital_human: "Digital human", none: "No presenter" };
+
+function screenplayMarkdown(plan) {
+  const avatar = plan.avatar || {};
+  const lines = [`# ${plan.title || "Screenplay"}`, "", plan.logline || "", "", `Length: ${plan.durationSeconds}s`, ""];
+  lines.push("## Presenter", "", `- Type: ${avatarLabels[avatar.type] || avatar.type || "—"}`);
+  for (const key of ["why", "persona", "look", "wardrobe", "setting", "delivery"]) if (avatar[key]) lines.push(`- ${key[0].toUpperCase()}${key.slice(1)}: ${avatar[key]}`);
+  lines.push("", "## Script (3s + 5s)", "", `- **${timeRange(plan.hook || {})} · Hook** (${plan.hook?.technique || ""}): ${plan.hook?.line || ""}`);
+  (plan.beats || []).forEach((beat, index) => lines.push(`- **${timeRange(beat)} · Beat ${index + 1}** — ${beat.point || ""}: ${beat.line || ""}`));
+  lines.push("", "## Screenplay", "", "| # | Time | Shot | Camera | Presenter | Visual | On-screen text | Voiceover | Audio | Transition | Source |", "|---|---|---|---|---|---|---|---|---|---|---|");
+  const cell = (value) => String(value || "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+  (plan.screenplay || []).forEach((shot) => lines.push(`| ${cell(shot.shot)} | ${timeRange(shot)} | ${cell([shot.shotSize, shot.angle].filter(Boolean).join(", "))} | ${cell(shot.camera)} | ${cell(shot.presenter)} | ${cell(shot.visual)} | ${cell(shot.onScreenText)} | ${cell(shot.voiceover)} | ${cell(shot.audio)} | ${cell(shot.transition)} | ${cell(shot.source)} |`));
+  if (plan.motion) lines.push("", "## Opening motion (Veo)", "", plan.motion);
+  if (plan.prep?.length) lines.push("", "## Before you shoot", "", ...plan.prep.map((item) => `- ${item}`));
+  return lines.join("\n");
+}
+
+function useScript(plan) {
+  if (plan.voiceover) transcript.value = String(plan.voiceover).slice(0, 1200);
+  if (plan.motion) $("#videoPrompt").value = plan.motion;
+  updateTranscript();
+  setStep("audio");
+  transcript.focus();
+  showToast("Script added to your voiceover");
+}
+
+function renderScript(plan) {
+  const results = $("#scriptResults");
+  results.replaceChildren();
+  const duration = Number(plan.durationSeconds) || Number(plan.beats?.at(-1)?.end) || 30;
+
+  const head = element("section", "ideas-section");
+  const issues = pacingIssues(plan);
+  const check = element("span", `pacing-check${issues.length ? " warn" : ""}`, issues.length ? `Check pacing: ${issues.join(", ")}` : "✓ 3s hook · ≤5s beats");
+  head.append(element("span", "panel-index", `STEP 2 / SCRIPT & SCREENPLAY · ${duration}s`), element("h3", "", plan.title || "Your script"));
+  if (plan.logline) head.append(element("p", "", plan.logline));
+  head.append(check);
+  const actions = element("div", "idea-actions");
+  const use = element("button", "primary-button");
+  use.type = "button";
+  use.innerHTML = 'Use this script <span class="button-arrow">→</span>';
+  use.addEventListener("click", () => useScript(plan));
+  const copy = element("button", "secondary-button", "Copy screenplay");
+  copy.type = "button";
+  copy.addEventListener("click", () => navigator.clipboard.writeText(screenplayMarkdown(plan)).then(() => showToast("Screenplay copied as Markdown"), () => showToast("Couldn’t copy — try Download")));
+  const download = element("button", "secondary-button", "Download .md");
+  download.type = "button";
+  download.addEventListener("click", () => {
+    const url = URL.createObjectURL(new Blob([screenplayMarkdown(plan)], { type: "text/markdown" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "screenplay.md";
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  });
+  actions.append(use, copy, download);
+  head.append(actions);
+  results.append(head);
+
+  const script = element("section", "ideas-section");
+  script.append(element("span", "panel-index", "SCRIPT"), element("h3", "", "Hook in 3 seconds, a new point every 5"));
+  const segments = [{ ...plan.hook, label: "Hook", hook: true }, ...(plan.beats || []).map((beat, index) => ({ ...beat, label: `${index + 1}` }))];
+  const timeline = element("div", "script-timeline");
+  segments.forEach((segment) => {
+    const bar = element("span", segment.hook ? "hook" : "", segment.label);
+    bar.style.flexGrow = Math.max(0.5, (Number(segment.end) || 0) - (Number(segment.start) || 0));
+    bar.title = `${timeRange(segment)} · ${segment.hook ? segment.technique || "Hook" : segment.point || ""}`;
+    timeline.append(bar);
+  });
+  script.append(timeline);
+  const beats = element("ol", "beat-list");
+  segments.forEach((segment) => {
+    const item = element("li", segment.hook ? "hook" : "");
+    const meta = element("div", "beat-meta");
+    meta.append(element("span", "beat-time", timeRange(segment)), element("strong", "", segment.hook ? `Hook${segment.technique ? ` · ${segment.technique}` : ""}` : segment.point || ""));
+    if (!segment.hook && segment.technique) meta.append(element("span", "beat-technique", segment.technique));
+    item.append(meta, element("p", "beat-line", segment.line || ""));
+    if (segment.hook && segment.visual) item.append(element("p", "beat-visual", segment.visual));
+    beats.append(item);
+  });
+  script.append(beats);
+  results.append(script);
+
+  if (plan.avatar) {
+    const avatar = element("section", "ideas-section");
+    avatar.append(element("span", "panel-index", "PRESENTER"), element("h3", "", avatarLabels[plan.avatar.type] || plan.avatar.type || "Presenter"));
+    const list = element("dl", "avatar-card");
+    [["Why", "why"], ["Persona", "persona"], ["Look", "look"], ["Wardrobe", "wardrobe"], ["Setting", "setting"], ["Delivery", "delivery"]].forEach(([label, key]) => {
+      if (plan.avatar[key]) list.append(element("dt", "", label), element("dd", "", plan.avatar[key]));
+    });
+    avatar.append(list);
+    results.append(avatar);
+  }
+
+  if (plan.screenplay?.length) {
+    const screenplay = element("section", "ideas-section");
+    screenplay.append(element("span", "panel-index", "SCREENPLAY"), element("h3", "", `${plan.screenplay.length} shots`));
+    const list = element("div", "shot-list");
+    plan.screenplay.forEach((shot) => {
+      const card = element("article", "shot-card");
+      const header = element("header");
+      header.append(element("strong", "", `Shot ${shot.shot || ""}`), element("span", "beat-time", timeRange(shot)), element("span", "", shot.beat === "hook" ? "HOOK" : shot.beat ? `BEAT ${shot.beat}` : ""));
+      card.append(header);
+      if (shot.voiceover) card.append(element("p", "beat-line", shot.voiceover));
+      const details = element("dl");
+      [["Shot", [shot.shotSize, shot.angle].filter(Boolean).join(" · ")], ["Camera", shot.camera], ["Presenter", shot.presenter], ["Visual", shot.visual], ["On screen", shot.onScreenText], ["Audio", shot.audio], ["Transition", shot.transition], ["Source", shot.source]].forEach(([label, value]) => {
+        if (value) details.append(element("dt", "", label), element("dd", "", value));
+      });
+      card.append(details);
+      list.append(card);
+    });
+    screenplay.append(list);
+    results.append(screenplay);
+  }
+
+  if (plan.motion || plan.prep?.length) {
+    const prep = element("section", "ideas-section");
+    prep.append(element("span", "panel-index", "BEFORE YOU SHOOT"), element("h3", "", "Prepare these"));
+    if (plan.prep?.length) {
+      const list = element("ul");
+      plan.prep.forEach((item) => list.append(element("li", "", item)));
+      prep.append(list);
+    }
+    if (plan.motion) prep.append(element("p", "", `Opening motion for Veo: ${plan.motion}`));
+    results.append(prep);
+  }
+}
+
+async function generateScript() {
+  const button = $("#generateScript");
+  clearFeedback("#scriptFeedback");
+  if (!state.api.ideas) {
+    feedback("#scriptFeedback", "Script writing isn’t connected. Add GEMINI_API_KEY to .env and restart the server.", "error");
+    return;
+  }
+  const idea = $("#originalIdea").value.trim();
+  if (!idea) {
+    feedback("#scriptFeedback", "Write your original idea first, or develop one of the ideas above.", "error");
+    $("#originalIdea").focus();
+    return;
+  }
+  setBusy(button, true, "Writing script & screenplay…");
+  try {
+    const response = await fetch("/api/script", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        idea,
+        brief: $("#ideaBrief").value.trim(),
+        platform: $("#ideaPlatform").value,
+        durationSeconds: Number($("#scriptLength").value),
+        avatar: $("#avatarChoice").value,
+        images: state.ideaImages.map((item) => ({ name: item.name, ...base64Part(item.dataUrl) })),
+      }),
+    });
+    if (!response.ok) throw await apiError(response);
+    state.scriptPlan = await response.json();
+    renderScript(state.scriptPlan);
+    $("#saveLabel").textContent = "Unsaved changes";
+    feedback("#scriptFeedback", "Script and screenplay ready. Edit the idea and write again, or use this script for the voiceover.");
+    showToast("Screenplay is ready");
+  } catch (error) {
+    feedback("#scriptFeedback", error.message, "error");
+  } finally {
+    setBusy(button, false);
   }
 }
 
@@ -655,6 +870,9 @@ $("#backToMotion").addEventListener("click", () => setStep("motion"));
 $$('.step[data-step="ideas"]').forEach((button) => button.addEventListener("click", () => setStep("ideas")));
 $("#generateIdeas").addEventListener("click", generateIdeas);
 $("#skipIdeas").addEventListener("click", () => setStep("audio"));
+$("#ownIdea").addEventListener("click", () => openDevelop($("#originalIdea").value.trim() ? undefined : $("#ideaBrief").value.trim()));
+$("#generateScript").addEventListener("click", generateScript);
+$("#originalIdea").addEventListener("input", () => { $("#saveLabel").textContent = "Unsaved changes"; });
 $("#ideaImagesInput").addEventListener("change", (event) => addIdeaImages(event.target.files));
 $("#ideaBrief").addEventListener("input", () => { $("#saveLabel").textContent = "Unsaved changes"; });
 $$('.step[data-step="audio"]').forEach((button) => button.addEventListener("click", () => setStep("audio")));
@@ -730,5 +948,7 @@ $("#aspectRatio").dispatchEvent(new Event("change"));
 $("#sceneDuration").dispatchEvent(new Event("change"));
 $("#saveLabel").textContent = "All changes saved";
 renderIdeaMaterials();
+if (state.scriptPlan) renderScript(state.scriptPlan);
+if (state.scriptPlan || $("#originalIdea").value.trim()) $("#developPanel").hidden = false;
 setStep("ideas");
 refreshApiStatus();
