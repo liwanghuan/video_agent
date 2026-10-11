@@ -195,7 +195,7 @@ curl -H "Authorization: Bearer ${TOKEN}" "${STUDIO_URL}/api/health"
 
 The response should report `qwen: true` and `vertex: true` once their configuration is present. Test the single-scene path (generate Qwen audio, generate a Veo clip, then **Merge voiceover · Download MP4**). For a storyboard, generate every shot's audio/video in order, then use **Assemble shots + audio · Download MP4**; this calls `POST /api/export-segments` to concatenate the clips, mux each matching narration track, and optionally include a selectable Chinese subtitle track. If a Qwen clip outlasts its planned shot, assembly holds the Veo clip's final frame rather than cutting the narration.
 
-The multi-shot export route accepts up to 15 shots and 120 seconds, with a maximum 120 MiB JSON request body. It uses the Cloud Run container's temporary disk and FFmpeg; the deployment above provisions 2 GiB memory and serializes requests per instance to reduce OOM risk. Monitor memory/latency before increasing concurrency. `/api/video`, `/api/export`, and `/api/export-segments` are **POST** routes and are not meant to be opened as browser GET URLs; a direct GET returns `API route not found`.
+The multi-shot export route accepts up to 15 shots and 120 seconds. The browser sends GCS references for generated Veo clips plus the smaller narration payload; Cloud Run validates each URI against `VERTEX_OUTPUT_URI` and streams the objects to temporary files for FFmpeg. This avoids posting Base64-encoded MP4s through Cloud Run's request-size limit. The runtime service account therefore needs object read/write access to the configured output prefix (the deployment grants `roles/storage.objectUser`). The route accepts at most 8 MiB of JSON for audio and metadata and uses temporary disk/FFmpeg; the deployment above provisions 2 GiB memory and serializes requests per instance to reduce OOM risk. Monitor memory/latency before increasing concurrency. `/api/video`, `/api/export`, and `/api/export-segments` are **POST** routes and are not meant to be opened as browser GET URLs; a direct GET returns `API route not found`.
 
 Inspect logs when needed:
 
@@ -208,7 +208,7 @@ gcloud run services logs read framehouse-qwen --region "$REGION" --limit 100
 
 - Veo generation polls a long-running operation for up to 12 minutes; Cloud Run's 900-second request timeout leaves time for processing and transfer.
 - Add a Cloud Storage lifecycle policy for old generated clips. Monitor bucket growth.
-- FFmpeg muxing/assembly uses temporary local files and buffers media in the Framehouse container. The multi-shot browser request contains base64 media; keep it below the 120 MiB API limit. Monitor memory and request duration, and increase concurrency/resources based on measured load.
+- FFmpeg assembly streams generated clips from Cloud Storage into temporary local files. The multi-shot browser request now carries only GCS references, transcript metadata, and base64 audio, with an 8 MiB application limit. Monitor memory and request duration, and increase concurrency/resources based on measured load.
 - Configure budget alerts, Cloud Run maximum instances, and Vertex quotas. Budget alerts notify but do not cap spend.
 - The Qwen GPU service can incur charges when active. Start with a low maximum instance count and confirm scale-to-zero behavior and cold-start time.
 

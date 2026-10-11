@@ -718,7 +718,7 @@ function renderProductionPlan(proposal) {
 function syncProductionExport() {
   const button = $("#productionExport");
   if (!button) return;
-  const ready = Boolean(state.shotMedia.length) && state.shotMedia.every((shot) => shot.videoBlob && shot.audioBlob);
+  const ready = Boolean(state.shotMedia.length) && state.shotMedia.every((shot) => shot.videoBlob && shot.videoUri && shot.audioBlob);
   button.disabled = !ready;
   button.title = ready ? "打开最终视频导出" : "先生成所有镜头的 Veo 视频和 Qwen 音频";
 }
@@ -805,6 +805,7 @@ function invalidateShotAfterTranscriptEdit(index) {
     if (dependent) {
       dependent.videoBlob = null;
       dependent.videoUrl = null;
+      dependent.videoUri = null;
       dependent.lastFrame = null;
       if (next > index) dependent.status = dependent.audioBlob ? "等待上游镜头重新生成" : "";
       renderShotMedia(next);
@@ -909,6 +910,7 @@ async function generateShotVideo(index) {
     if (dependent) {
       dependent.videoBlob = null;
       dependent.videoUrl = null;
+      dependent.videoUri = null;
       dependent.lastFrame = null;
       dependent.status = dependent.audioBlob ? "音频已生成；等待上游镜头重新生成" : "";
       dependent.error = "";
@@ -939,6 +941,8 @@ async function generateShotVideo(index) {
     });
     if (!response.ok) throw await apiError(response);
     shot.videoBlob = await response.blob();
+    shot.videoUri = response.headers.get("X-Framehouse-Asset-Uri");
+    if (!shot.videoUri) throw new Error("The server did not return a Cloud Storage reference for this shot. Redeploy the latest app before assembling.");
     if (shot.videoUrl) URL.revokeObjectURL(shot.videoUrl);
     shot.videoUrl = URL.createObjectURL(shot.videoBlob);
     shot.lastFrame = await lastVideoFrame(shot.videoBlob);
@@ -962,6 +966,7 @@ async function generateShotVideo(index) {
     if (shot.videoUrl) URL.revokeObjectURL(shot.videoUrl);
     shot.videoBlob = null;
     shot.videoUrl = null;
+    shot.videoUri = null;
     shot.lastFrame = null;
     shot.error = error.message;
     shot.status = "";
@@ -1288,7 +1293,7 @@ async function exportVideo() {
   const button = $("#downloadVideo");
   clearFeedback("#exportFeedback");
   const multiShot = Boolean(state.productionProposal);
-  if (multiShot && !state.shotMedia.every((shot) => shot.videoBlob && shot.audioBlob)) {
+  if (multiShot && !state.shotMedia.every((shot) => shot.videoBlob && shot.videoUri && shot.audioBlob)) {
     feedback("#exportFeedback", "请先生成每个镜头的 Veo 视频和对应 Qwen 音频，再合并导出。", "error");
     return;
   }
@@ -1316,7 +1321,7 @@ async function exportVideo() {
           segments: await Promise.all(state.shotMedia.map(async (shot, index) => {
             const segment = state.productionProposal.scenePlan.segments[index];
             return {
-              videoBase64: await blobToBase64(shot.videoBlob),
+              videoUri: shot.videoUri,
               audioBase64: await blobToBase64(shot.audioBlob),
               transcript: sceneTranscript(segment, index),
               durationSeconds: (Number(segment.endMs) - Number(segment.startMs)) / 1000,

@@ -1,7 +1,9 @@
 const http = require("node:http");
 const { execFileSync, spawn } = require("node:child_process");
 const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
-const { createReadStream } = require("node:fs");
+const { createReadStream, createWriteStream } = require("node:fs");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const path = require("node:path");
 const os = require("node:os");
 
@@ -176,6 +178,36 @@ async function downloadGcsObject(uri, token) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+async function downloadGcsObjectToFile(uri, token, filePath) {
+  const match = uri.match(/^gs:\/\/([^/]+)\/(.+)$/);
+  if (!match) throw new Error("Veo returned an unsupported video location.");
+  const [, bucket, object] = match;
+  const url = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(object)}?alt=media`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`Could not download shot from Cloud Storage (HTTP ${response.status}).`);
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
+}
+
+function outputObjectUri(uri) {
+  const prefix = outputUri.endsWith("/") ? outputUri : `${outputUri}/`;
+  return typeof uri === "string" && uri.startsWith(prefix) && /^gs:\/\/[^/]+\/.+/.test(uri);
+}
+
+async function uploadGeneratedVideo(bytes, token) {
+  const match = outputUri.match(/^gs:\/\/([^/]+)(?:\/(.*))?$/);
+  if (!match) throw new Error("VERTEX_OUTPUT_URI must include a valid gs:// bucket path.");
+  const [, bucket, prefix = ""] = match;
+  const object = `${prefix.replace(/\/+$/, "") ? `${prefix.replace(/\/+$/, "")}/` : ""}framehouse-${require("node:crypto").randomUUID()}.mp4`;
+  const url = `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(bucket)}/o?uploadType=media&name=${encodeURIComponent(object)}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "video/mp4" },
+    body: bytes,
+  });
+  if (!response.ok) throw new Error(`Could not stage the generated shot in Cloud Storage (HTTP ${response.status}).`);
+  return `gs://${bucket}/${object}`;
+}
+
 function findGeneratedVideo(operationResponse) {
   const result = operationResponse.generateVideoResponse || operationResponse;
   const sample = result.generatedSamples?.[0] || result.videos?.[0] || result.generated_videos?.[0];
@@ -219,8 +251,11 @@ async function generateVeo(body) {
   if (!operation.name) throw new Error("Vertex AI did not return a generation operation.");
   const result = await waitForOperation(operation.name, token);
   const generated = findGeneratedVideo(result);
-  if (Buffer.isBuffer(generated)) return generated;
-  if (typeof generated === "string") return downloadGcsObject(generated, token);
+  if (Buffer.isBuffer(generated)) {
+    const videoUri = await uploadGeneratedVideo(generated, token);
+    return { video: generated, videoUri };
+  }
+  if (typeof generated === "string") return { video: await downloadGcsObject(generated, token), videoUri: generated };
   throw new Error(result.raiMediaFilteredReasons?.join(" ") || "Veo finished without returning a video. Check the prompt and try again.");
 }
 
@@ -460,8 +495,8 @@ async function exportShotAssembly(body) {
   let plannedDuration = 0;
   for (const [index, segment] of segments.entries()) {
     const duration = Number(segment.durationSeconds);
-    if (![4, 6, 8].includes(duration) || typeof segment.videoBase64 !== "string" || !segment.videoBase64 || typeof segment.audioBase64 !== "string" || !segment.audioBase64) {
-      throw Object.assign(new Error(`Shot ${index + 1} is missing its MP4, MP3, or supported 4/6/8-second duration.`), { statusCode: 400 });
+    if (![4, 6, 8].includes(duration) || !outputObjectUri(segment.videoUri) || typeof segment.audioBase64 !== "string" || !segment.audioBase64) {
+      throw Object.assign(new Error(`Shot ${index + 1} needs a generated Cloud Storage video reference, MP3 audio, and a supported 4/6/8-second duration.`), { statusCode: 400 });
     }
     plannedDuration += duration;
   }
@@ -474,6 +509,7 @@ async function exportShotAssembly(body) {
   const outputPath = path.join(temp, "framehouse-final.mp4");
   const subtitlePath = path.join(temp, "captions.srt");
   try {
+    const token = await accessToken();
     const inputs = [];
     const renderSegments = [];
     let totalDuration = 0;
@@ -481,7 +517,7 @@ async function exportShotAssembly(body) {
       const videoPath = path.join(temp, `shot-${index + 1}.mp4`);
       const audioPath = path.join(temp, `shot-${index + 1}.mp3`);
       await Promise.all([
-        writeFile(videoPath, Buffer.from(segment.videoBase64, "base64")),
+        downloadGcsObjectToFile(segment.videoUri, token, videoPath),
         writeFile(audioPath, Buffer.from(segment.audioBase64, "base64")),
       ]);
       const audioDuration = Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", audioPath], { encoding: "utf8" }).trim());
@@ -622,8 +658,8 @@ async function handleApi(request, response, pathname) {
 
   if (pathname === "/api/video" && request.method === "POST") {
     const body = await readJson(request);
-    const video = await generateVeo(body);
-    response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "Cache-Control": "no-store" });
+    const { video, videoUri } = await generateVeo(body);
+    response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "X-Framehouse-Asset-Uri": videoUri, "Cache-Control": "no-store" });
     return response.end(video);
   }
 
@@ -635,7 +671,7 @@ async function handleApi(request, response, pathname) {
   }
 
   if (pathname === "/api/export-segments" && request.method === "POST") {
-    const body = await readJson(request, 120 * 1024 * 1024);
+    const body = await readJson(request, 8 * 1024 * 1024);
     const video = await exportShotAssembly(body);
     response.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length, "Content-Disposition": 'attachment; filename="framehouse-final.mp4"', "Cache-Control": "no-store" });
     return response.end(video);
