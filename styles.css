@@ -108,6 +108,14 @@
   grid-column: 2;
 }
 
+.editor-column > .production-results {
+  grid-column: auto;
+  width: 100%;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line, #e8eae5);
+}
+
 .production-scene-card {
   padding: 14px 0;
   border-bottom: 1px solid var(--line, #e8e5df);

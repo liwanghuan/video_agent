@@ -368,6 +368,105 @@ function timeRange(item) {
   return `${Number(item.start) || 0}–${Number(item.end) || 0}s`;
 }
 
+function selectedScriptProposal(plan) {
+  const requestedDuration = Math.max(4, Math.min(60, Number(plan.durationSeconds) || 30));
+  // Veo accepts only 4, 6, or 8-second clips. Round odd script lengths up by
+  // one second, then partition into valid clips without leaving a 2-second tail.
+  const renderDuration = Math.ceil(requestedDuration / 2) * 2;
+  const durations = [];
+  let remaining = renderDuration;
+  while (remaining > 8) {
+    const next = remaining === 10 ? 6 : 8;
+    durations.push(next);
+    remaining -= next;
+  }
+  durations.push(remaining);
+
+  const transcriptBlocks = [
+    { id: "hook", start: 0, end: 3, text: plan.hook?.line || "" },
+    ...(plan.beats || []).map((beat, index) => ({
+      id: `beat_${index + 1}`,
+      start: Number(beat.start),
+      end: Number(beat.end),
+      text: beat.line || "",
+    })),
+  ].filter((block) => block.text.trim()).map((block) => ({
+    id: block.id,
+    startMs: Math.max(0, Math.round((Number.isFinite(block.start) ? block.start : 0) * 1000)),
+    endMs: Math.max(0, Math.round((Number.isFinite(block.end) ? block.end : 0) * 1000)),
+    text: block.text.trim(),
+  }));
+  if (!transcriptBlocks.length && plan.voiceover?.trim()) {
+    transcriptBlocks.push({ id: "full_script", startMs: 0, endMs: requestedDuration * 1000, text: plan.voiceover.trim() });
+  }
+  const screenplay = Array.isArray(plan.screenplay) ? plan.screenplay : [];
+  let startMs = 0;
+  const segments = durations.map((durationSeconds, index) => {
+    const endMs = startMs + durationSeconds * 1000;
+    const intervalShots = screenplay.filter((shot) => {
+      const shotStart = Math.max(0, Number(shot.start) || 0);
+      const shotEnd = Math.max(shotStart, Number(shot.end) || shotStart);
+      return shotEnd * 1000 > startMs && shotStart * 1000 < endMs;
+    });
+    const intervalBlocks = transcriptBlocks.filter((block) => {
+      const midpoint = (block.startMs + block.endMs) / 2;
+      return midpoint >= startMs && (midpoint < endMs || (index === durations.length - 1 && midpoint <= endMs));
+    });
+    const shotDetails = intervalShots.map((shot) => [
+      shot.shotSize && `Framing: ${shot.shotSize}`,
+      shot.angle && `Angle: ${shot.angle}`,
+      shot.visual && `Visual: ${shot.visual}`,
+      shot.presenter && `Presenter: ${shot.presenter}`,
+      shot.camera && `Camera: ${shot.camera}`,
+      shot.transition && `Transition: ${shot.transition}`,
+    ].filter(Boolean).join(". ")).filter(Boolean);
+    const narration = intervalBlocks.map((block) => block.text).join(" ");
+    const screenplayPrompt = shotDetails.length ? shotDetails.join("\n") : (plan.motion || "Create a natural, polished real-estate listing shot based on the narration context.");
+    const videoPrompt = [
+      `Generate a silent ${durationSeconds}-second real-estate social-video shot for timeline ${Math.round(startMs / 1000)}–${Math.round(endMs / 1000)} seconds.`,
+      screenplayPrompt,
+      narration ? `Narration for this interval (visual context only; do not render words): ${narration}` : "",
+      "Use the supplied image as the opening frame. Preserve the property's layout, furniture, proportions, materials, and colors. Use believable camera motion and consistent lighting. Do not add dialogue, music, captions, logos, or new architectural features.",
+    ].filter(Boolean).join("\n\n");
+    const firstShot = intervalShots[0];
+    const lastShot = intervalShots.at(-1);
+    const segment = {
+      id: `selected_script_segment_${index + 1}`,
+      index,
+      startMs,
+      endMs,
+      durationSeconds,
+      transcriptBlockIds: intervalBlocks.map((block) => block.id),
+      openingFramePrompt: firstShot?.visual || plan.hook?.visual || plan.motion || "Opening view of the property from the selected photo.",
+      closingFramePrompt: lastShot?.visual || firstShot?.visual || "Continue the natural camera movement while preserving the room layout.",
+      videoPrompt,
+    };
+    startMs = endMs;
+    return segment;
+  });
+  const mappedTranscriptBlocks = transcriptBlocks.map((block) => ({
+    ...block,
+    startMs: Math.min(block.startMs, requestedDuration * 1000),
+    endMs: Math.min(Math.max(block.endMs, block.startMs), requestedDuration * 1000),
+  })).filter((block) => block.endMs > block.startMs);
+  return {
+    proposalId: `selected-script-${Date.now()}`,
+    source: "selected-script",
+    voiceProfileId: state.selectedVoice,
+    durationSeconds: renderDuration,
+    scriptPlan: {
+      title: plan.title || "Selected script",
+      logline: plan.logline || "",
+      durationSeconds: requestedDuration,
+      transcriptBlocks: mappedTranscriptBlocks,
+    },
+    scenePlan: { segments },
+    warnings: renderDuration !== requestedDuration
+      ? [`Veo needs 4, 6, or 8 seconds per shot. The ${requestedDuration}-second script is rendered as ${renderDuration} seconds; the final second is reserved as visual tail.`]
+      : [],
+  };
+}
+
 const avatarLabels = { real_person: "Real person", digital_human: "Digital human", none: "No presenter" };
 
 function screenplayMarkdown(plan) {
@@ -389,9 +488,15 @@ function useScript(plan) {
   if (plan.voiceover) transcript.value = String(plan.voiceover).slice(0, 1200);
   if (plan.motion) $("#videoPrompt").value = plan.motion;
   updateTranscript();
+  const proposal = selectedScriptProposal(plan);
+  const productionResults = $("#productionResults");
+  $(".editor-column").append(productionResults);
+  renderProductionPlan(proposal);
   setStep("audio");
   transcript.focus();
-  showToast("Script added to your voiceover");
+  feedback("#audioFeedback", `Selected script mapped to ${proposal.scenePlan.segments.length} timed Veo shots. Generate all shots below, or review each interval first.`);
+  productionResults.scrollIntoView({ behavior: "smooth", block: "start" });
+  showToast("Script mapped to timed voiceover and Veo shots");
 }
 
 function renderScript(plan) {
@@ -511,7 +616,7 @@ function renderProductionPlan(proposal) {
   const transcriptBlocks = scriptPlan.transcriptBlocks || [];
   const header = element("section", "ideas-section");
   header.append(
-    element("span", "panel-index", `ADK PROPOSAL · ${scriptPlan.durationSeconds || Number($("#productionLength").value)}s · ${proposal.proposalId || "draft"}`),
+    element("span", "panel-index", `${proposal.source === "selected-script" ? "SELECTED SCRIPT" : "ADK PROPOSAL"} · ${scriptPlan.durationSeconds || Number($("#productionLength").value)}s · ${proposal.proposalId || "draft"}`),
     element("h3", "", scriptPlan.title || "Production plan"),
   );
   if (scriptPlan.logline) header.append(element("p", "", scriptPlan.logline));
