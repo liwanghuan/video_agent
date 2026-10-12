@@ -108,6 +108,11 @@
   grid-column: 2;
 }
 
+.finish-panel + .production-results {
+  margin-top: 23px;
+  min-height: 0;
+}
+
 .editor-column > .production-results {
   grid-column: auto;
   width: 100%;

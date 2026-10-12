@@ -99,8 +99,18 @@ function saveDraft() {
   }
 }
 
+// The shot cards hold the generated clips, so keep them in whichever stage is visible.
+function placeProductionResults(step) {
+  if (!state.productionProposal) return;
+  const results = $("#productionResults");
+  if (step === "ideas") $("#scriptResults").after(results);
+  else if (step === "audio") $(".editor-column").append(results);
+  else $("#finishPanel").after(results);
+}
+
 function setStep(step) {
   state.currentStep = step;
+  placeProductionResults(step);
   if (step === "finish") configureExportMode();
   $$(".step").forEach((button) => button.classList.toggle("active", button.dataset.step === step));
   $("#editorColumn")?.setAttribute("hidden", "");
@@ -489,13 +499,11 @@ function useScript(plan) {
   if (plan.motion) $("#videoPrompt").value = plan.motion;
   updateTranscript();
   const proposal = selectedScriptProposal(plan);
-  const productionResults = $("#productionResults");
-  $(".editor-column").append(productionResults);
   renderProductionPlan(proposal);
   setStep("audio");
   transcript.focus();
   feedback("#audioFeedback", `Selected script mapped to ${proposal.scenePlan.segments.length} timed Veo shots. Generate all shots below, or review each interval first.`);
-  productionResults.scrollIntoView({ behavior: "smooth", block: "start" });
+  $("#productionResults").scrollIntoView({ behavior: "smooth", block: "start" });
   showToast("Script mapped to timed voiceover and Veo shots");
 }
 
@@ -777,8 +785,13 @@ function renderShotMedia(index) {
 
 function plannedSceneTranscript(segment) {
   const blocks = state.productionProposal?.scriptPlan?.transcriptBlocks || [];
-  const midpoint = Math.floor((Number(segment.startMs) + Number(segment.endMs)) / 2);
-  return blocks.filter((block) => Number(block.startMs) <= midpoint && Number(block.endMs) > midpoint).map((block) => block.text).join(" ").trim();
+  // A shot owns every block it lists, or failing that, every block whose midpoint falls inside it.
+  const ids = Array.isArray(segment.transcriptBlockIds) ? new Set(segment.transcriptBlockIds) : null;
+  return blocks.filter((block) => {
+    if (ids) return ids.has(block.id);
+    const midpoint = (Number(block.startMs) + Number(block.endMs)) / 2;
+    return midpoint >= Number(segment.startMs) && midpoint < Number(segment.endMs);
+  }).map((block) => block.text).join(" ").trim();
 }
 
 function sceneTranscript(segment, index) {
@@ -1236,7 +1249,6 @@ async function generateScene() {
   const button = $("#generateVideo");
   setBusy(button, true, "Generating with Veo… this can take a minute");
   try {
-    const audioBase64 = state.audioBlob ? await blobToBase64(state.audioBlob) : null;
     const response = await fetch("/api/video", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1245,7 +1257,6 @@ async function generateScene() {
         transcript: transcript.value.trim(),
         firstFrame: base64Part(state.firstFrame || await imageToDataUrl("/f30881536.jpg")),
         lastFrame: base64Part(state.lastFrame),
-        audioBase64,
         durationSeconds: Number($("#sceneDuration").value),
         aspectRatio: $("#aspectRatio").value,
         resolution: $("#resolution").value,
